@@ -74,40 +74,28 @@ def load_excel_master():
         {"품목명": "서울우유", "대분류": "원재료", "유통기한": "2026-06-25", "엑셀기본재고": 42}
     ])
 
-# 일별 로그 파일 및 하위 호환성 컬럼 초기화
+# 일별 로그 파일 초기화
 if not os.path.exists(STOCK_LOG_FILE):
     df_empty = pd.DataFrame(columns=["날짜", "대분류", "품목명", "구분", "수량", "유통기한"])
     df_empty.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-else:
-    try:
-        check_df = pd.read_csv(STOCK_LOG_FILE, nrows=1)
-        if "유통기한" not in check_df.columns:
-            full_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-            full_df["유통기한"] = ""
-            full_df.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-    except:
-        pass
 
-# 1단계: 엑셀 기본 데이터 로드
+# 세션 상태(State) 안전 초기화
+if "success_msg" not in st.session_state: st.session_state.success_msg = ""
+if "warning_msg" not in st.session_state: st.session_state.warning_msg = ""
+if "in_qty" not in st.session_state: st.session_state.in_qty = 0
+if "out_qty" not in st.session_state: st.session_state.out_qty = 0
+
+# 데이터 로드 및 유통기한 실시간 매핑
 base_master = load_excel_master()
-
-# 2단계: 사용자가 입고 시 변경한 최신 유통기한 데이터 실시간 반영하기 (★핵심 기능)
 master_data = base_master.copy()
 log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
 if not log_df.empty and "유통기한" in log_df.columns:
     expiry_logs = log_df[log_df["유통기한"].notna() & (log_df["유통기한"].astype(str) != "") & (log_df["유통기한"].astype(str) != "nan")]
     if not expiry_logs.empty:
-        # 날짜 순으로 정렬 후 가장 최근에 설정된 품목별 유통기한 추출
         latest_expiries = expiry_logs.sort_values(by="날짜").groupby("품목명").last()["유통기한"].to_dict()
         master_data["유통기한"] = master_data["품목명"].map(latest_expiries).fillna(master_data["유통기한"])
 
-# --- 세션 상태 초기화 ---
-if "qty_value" not in st.session_state:
-    st.session_state.qty_value = 0
-if "success_msg" not in st.session_state:
-    st.session_state.success_msg = ""
-
-# --- 유통기한 임박 알림 계산 ---
+# 유통기한 임박 계산
 today = datetime.date.today()
 imminent_items = []
 for idx, row in master_data.iterrows():
@@ -121,6 +109,49 @@ for idx, row in master_data.iterrows():
         except:
             pass
 
+# --- 콜백 함수 구역 (에러 해결의 핵심) ---
+def save_inbound_callback():
+    """입고 데이터 저장 후 수량창을 안전하게 0으로 비우는 콜백 함수"""
+    qty = st.session_state.in_qty
+    if qty > 0:
+        current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+        new_data = pd.DataFrame([{
+            "날짜": st.session_state.in_date.strftime("%Y-%m-%d"),
+            "대분류": st.session_state.in_cat,
+            "품목명": st.session_state.in_item,
+            "구분": "금월 입고",
+            "수량": qty,
+            "유통기한": st.session_state.in_utg.strftime("%Y-%m-%d")
+        }])
+        current_logs = pd.concat([current_logs, new_data], ignore_index=True)
+        current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+        st.session_state.success_msg = f"📥 입고 완료: {st.session_state.in_item} | {qty}개 | 유통기한: {st.session_state.in_utg}"
+        st.session_state.in_qty = 0  # 위젯이 그려지기 전에 세션을 안전하게 초기화
+    else:
+        st.session_state.warning_msg = "⚠️ 입고 수량을 1개 이상 입력하셔야 합니다."
+
+def save_outbound_callback():
+    """출고 데이터 저장 후 수량창을 안전하게 0으로 비우는 콜백 함수"""
+    qty = st.session_state.out_qty
+    if qty > 0:
+        current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+        new_data = pd.DataFrame([{
+            "날짜": st.session_state.out_date.strftime("%Y-%m-%d"),
+            "대분류": st.session_state.out_cat,
+            "품목명": st.session_state.out_item,
+            "구분": "월 소모(출고)",
+            "수량": qty,
+            "유통기한": ""
+        }])
+        current_logs = pd.concat([current_logs, new_data], ignore_index=True)
+        current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+        st.session_state.success_msg = f"📤 출고 완료: {st.session_state.out_item} | {qty}개 소모"
+        st.session_state.out_qty = 0  # 위젯이 그려지기 전에 세션을 안전하게 초기화
+    else:
+        st.session_state.warning_msg = "⚠️ 출고 수량을 1개 이상 입력하셔야 합니다."
+
+
+# --- UI 레이아웃 ---
 st.title("☕ VINI COFFEE 안락동점 통합 재고관리 시스템")
 
 if imminent_items:
@@ -128,7 +159,6 @@ if imminent_items:
         for item in imminent_items:
             st.warning(item)
 
-# ★ 메뉴 분리 개편 (입고와 출고 메뉴 전격 분리)
 menu = st.sidebar.radio(
     "메뉴 이동", 
     [
@@ -139,7 +169,15 @@ menu = st.sidebar.radio(
     ]
 )
 
-# 공통 함수: 오늘 실시간 입력 내역 및 수정/삭제 레이아웃
+# 알림 메시지 출력 구역
+if st.session_state.success_msg:
+    st.success(st.session_state.success_msg)
+    st.session_state.success_msg = ""
+if st.session_state.warning_msg:
+    st.warning(st.session_state.warning_msg)
+    st.session_state.warning_msg = ""
+
+# 공통 기능: 오늘 입력 내역 및 수정/삭제
 def show_today_logs_and_management():
     st.markdown("---")
     st.subheader("🔍 오늘 실시간 입력된 내역")
@@ -181,22 +219,19 @@ def show_today_logs_and_management():
                     current_logs.loc[selected_idx, '수량'] = new_qty
                     updated_logs = current_logs
                     st.session_state.success_msg = f"🔧 수량이 {new_qty}개로 정상 수정되었습니다."
-                updated_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+                current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
                 st.rerun()
     else:
         st.caption("오늘 아직 입력된 내역이 없습니다.")
 
-# 1) 물품 입고 등록 메뉴
+
+# 1) 입고 등록 메뉴
 if menu == "📥 물품 입고 등록 (+유통기한)":
     st.subheader("📥 매장 물품 입고 등록")
     st.info("💡 입고 수량과 유통기한을 맞춘 후 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
     
-    if st.session_state.success_msg:
-        st.success(st.session_state.success_msg)
-        st.session_state.success_msg = ""
-        
     categories = list(master_data['대분류'].unique())
-    selected_cat = st.selectbox("1. 입고 품목 분류 선택", categories)
+    selected_cat = st.selectbox("1. 입고 품목 분류 선택", categories, key="in_cat")
     
     filtered_items = master_data[master_data['대분류'] == selected_cat]
     item_list = filtered_items['품목명'].drop_duplicates().tolist()
@@ -204,10 +239,9 @@ if menu == "📥 물품 입고 등록 (+유통기한)":
     with st.form("inbound_form"):
         col1, col2 = st.columns(2)
         with col1:
-            selected_date = st.date_input("날짜 선택", datetime.date.today())
-            selected_item = st.selectbox("2. 입고 품목 선택", item_list)
+            st.date_input("날짜 선택", datetime.date.today(), key="in_date")
+            selected_item = st.selectbox("2. 입고 품목 선택", item_list, key="in_item")
         with col2:
-            # 선택 품목의 기존 유통기한 파악하여 기본값 배치
             item_info = filtered_items[filtered_items['품목명'] == selected_item].iloc[0]
             existing_utg = str(item_info['유통기한']).strip()
             
@@ -217,44 +251,21 @@ if menu == "📥 물품 입고 등록 (+유통기한)":
                 except: pass
                 
             st.caption(f"📊 기존 정보 ➡️ [현재 엑셀상 기본재고: {item_info['엑셀기본재고']}개 / 유통기한: {existing_utg}]")
-            input_utg = st.date_input("3. 유통기한 확인 및 변경 설정", default_utg_date)
+            st.date_input("3. 유통기한 확인 및 변경 설정", default_utg_date, key="in_utg")
             
-        quantity = st.number_input("4. 입고 수량 입력 후 엔터(Enter)", min_value=0, step=1, key="qty_value")
-        submit_btn = st.form_submit_button("📥 입고 데이터 저장하기")
-        
-        if submit_btn:
-            if quantity > 0:
-                current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-                new_data = pd.DataFrame([{
-                    "날짜": selected_date.strftime("%Y-%m-%d"),
-                    "대분류": selected_cat,
-                    "품목명": selected_item,
-                    "구분": "금월 입고",
-                    "수량": quantity,
-                    "유통기한": input_utg.strftime("%Y-%m-%d")
-                }])
-                current_logs = pd.concat([current_logs, new_data], ignore_index=True)
-                current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-                
-                st.session_state.success_msg = f"📥 입고 완료: {selected_item} | {quantity}개 | 유통기한: {input_utg}"
-                st.session_state.qty_value = 0
-                st.rerun()
-            else:
-                st.warning("⚠️ 입고 수량을 1개 이상 입력하셔야 합니다.")
+        st.number_input("4. 입고 수량 입력 후 엔터(Enter)", min_value=0, step=1, key="in_qty")
+        # ★ 핵심 바인딩: 버튼 클릭 및 엔터 시 콜백 함수 실행
+        st.form_submit_button("📥 입고 데이터 저장하기", on_click=save_inbound_callback)
                 
     show_today_logs_and_management()
 
-# 2) 물품 출고 등록 메뉴
+# 2) 출고 등록 메뉴
 elif menu == "📤 물품 출고 등록 (소모)":
     st.subheader("📤 매장 소모(출고) 등록")
     st.info("💡 출고(소모) 수량을 입력한 뒤 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
     
-    if st.session_state.success_msg:
-        st.success(st.session_state.success_msg)
-        st.session_state.success_msg = ""
-        
     categories = list(master_data['대분류'].unique())
-    selected_cat = st.selectbox("1. 출고 품목 분류 선택", categories)
+    selected_cat = st.selectbox("1. 출고 품목 분류 선택", categories, key="out_cat")
     
     filtered_items = master_data[master_data['대분류'] == selected_cat]
     item_list = filtered_items['품목명'].drop_duplicates().tolist()
@@ -262,39 +273,19 @@ elif menu == "📤 물품 출고 등록 (소모)":
     with st.form("outbound_form"):
         col1, col2 = st.columns(2)
         with col1:
-            selected_date = st.date_input("날짜 선택", datetime.date.today())
+            st.date_input("날짜 선택", datetime.date.today(), key="out_date")
+            selected_item = st.selectbox("2. 출고 품목 선택", item_list, key="out_item")
         with col2:
-            selected_item = st.selectbox("2. 출고 품목 선택", item_list)
+            item_info = filtered_items[filtered_items['품목명'] == selected_item].iloc[0]
+            st.caption(f"📊 현재 재고 참고 ➡️ [엑셀상 기본재고: {item_info['엑셀기본재고']}개 / 유통기한: {item_info['유통기한']}]")
             
-        item_info = filtered_items[filtered_items['품목명'] == selected_item].iloc[0]
-        st.caption(f"📊 현재 재고 참고 ➡️ [엑셀상 기본재고: {item_info['엑셀기본재고']}개 / 유통기한: {item_info['유통기한']}]")
-        
-        quantity = st.number_input("3. 소모(출고) 수량 입력 후 엔터(Enter)", min_value=0, step=1, key="qty_value")
-        submit_btn = st.form_submit_button("📤 출고 데이터 저장하기")
-        
-        if submit_btn:
-            if quantity > 0:
-                current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-                new_data = pd.DataFrame([{
-                    "날짜": selected_date.strftime("%Y-%m-%d"),
-                    "대분류": selected_cat,
-                    "품목명": selected_item,
-                    "구분": "월 소모(출고)",
-                    "수량": quantity,
-                    "유통기한": ""  # 출고 시에는 유통기한을 변경하지 않음
-                }])
-                current_logs = pd.concat([current_logs, new_data], ignore_index=True)
-                current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-                
-                st.session_state.success_msg = f"📤 출고(소모) 완료: {selected_item} | {quantity}개 소모"
-                st.session_state.qty_value = 0
-                st.rerun()
-            else:
-                st.warning("⚠️ 출고 수량을 1개 이상 입력하셔야 합니다.")
+        st.number_input("3. 소모(출고) 수량 입력 후 엔터(Enter)", min_value=0, step=1, key="out_qty")
+        # ★ 핵심 바인딩: 버튼 클릭 및 엔터 시 콜백 함수 실행
+        st.form_submit_button("📤 출고 데이터 저장하기", on_click=save_outbound_callback)
                 
     show_today_logs_and_management()
 
-# 3) 실시간 현재고 현황판 (★가시성 극대화 업그레이드)
+# 3) 실시간 현재고 현황판 (가시성 최고)
 elif menu == "📋 실시간 현재고 현황판":
     st.subheader("📋 매장 실시간 현재고 현황판")
     
@@ -318,14 +309,13 @@ elif menu == "📋 실시간 현재고 현황판":
     
     dashboard_df = dashboard_df.rename(columns={"엑셀기본재고": "기본재고(이월)", "금월 입고": "누적 입고량", "월 소모(출고)": "누적 소모량"})
     
-    # 상단 카드 집계
     total_count = len(dashboard_df)
     shortage_count = len(dashboard_df[dashboard_df['현재고'] <= 0])
     expiry_count = len(imminent_items)
     
     col_card1, col_card2, col_card3 = st.columns(3)
     with col_card1: st.metric(label="📦 관리 품목 수", value=f"{total_count}개")
-    with col_card2: st.metric(label="⚠️ 품절 및 재고부족 품목", value=f"{shortage_count}개", delta=f"-{shortage_count}" if shortage_count > 0 else "0", delta_color="inverse")
+    with col_card2: st.metric(label="⚠️ 품절 및 재고부족 품목", value=f"{shortage_count}개")
     with col_card3: st.metric(label="⏳ 유통기한 임박 품목", value=f"{expiry_count}개")
         
     st.markdown("---")
@@ -340,7 +330,6 @@ elif menu == "📋 실시간 현재고 현황판":
         
     display_dash = display_dash.sort_values(by="현재고", ascending=True)
     
-    # ★ 가시성 향상 스태클러 스타일링 기능 (재고가 0개 이하이면 현재고 셀을 연한 빨간색 처리)
     def highlight_shortage(row):
         styles = [''] * len(row)
         if row['현재고'] <= 0:
@@ -350,7 +339,6 @@ elif menu == "📋 실시간 현재고 현황판":
 
     if not display_dash.empty:
         styled_dash = display_dash.style.apply(highlight_shortage, axis=1)
-        # 꽉 찬 화면 레이아웃으로 출력
         st.dataframe(styled_dash, use_container_width=True, hide_index=True)
     else:
         st.caption("검색 조건에 맞는 품목이 없습니다.")
