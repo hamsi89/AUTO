@@ -34,6 +34,7 @@ def load_master_data():
                     df = pd.read_excel(xl, sheet_name=target_sheet, skiprows=2)
                     df.columns = [str(c).strip().replace(" ", "") for c in df.columns]
                     
+                    # 품목명 컬럼 찾기
                     name_col = None
                     for col in df.columns:
                         if '품목이름' in col or '구분' in col:
@@ -80,12 +81,6 @@ if not os.path.exists(STOCK_LOG_FILE):
 
 master_data = load_master_data()
 
-# --- 세션 상태 초기화 (수량 리셋 및 알림 메시지 유지용) ---
-if "qty_value" not in st.session_state:
-    st.session_state.qty_value = 0
-if "success_msg" not in st.session_state:
-    st.session_state.success_msg = ""
-
 # --- 유통기한 임박 알림 ---
 st.title("☕ VINI COFFEE 안락동점 통합 재고관리 시스템")
 
@@ -112,12 +107,7 @@ menu = st.sidebar.radio("메뉴 이동", ["📝 일별 입출고 기록", "📊 
 # 1) 매일 입출고 기록 화면
 if menu == "📝 일별 입출고 기록":
     st.subheader("일별 입출고 등록")
-    st.info("💡 숫자를 입력한 뒤 바로 **엔터(Enter) 키**를 누르면 즉시 저장되고 입력창이 비워집니다!")
-    
-    # ★ 새로고침 후에도 살아남는 알림 메시지 띄우기
-    if st.session_state.success_msg:
-        st.success(st.session_state.success_msg)
-        st.session_state.success_msg = "" # 한 번 띄운 후 비우기
+    st.info("💡 숫자를 입력한 뒤 바로 **엔터(Enter) 키**를 누르면 즉시 저장됩니다!")
     
     categories = list(master_data['대분류'].unique())
     selected_cat = st.selectbox("1. 품목 분류 선택", categories)
@@ -125,6 +115,7 @@ if menu == "📝 일별 입출고 기록":
     filtered_items = master_data[master_data['대분류'] == selected_cat]
     item_list = filtered_items['품목명'].drop_duplicates().tolist()
     
+    # ★핵심 수정: 타이밍 오류를 유발하는 clear_on_submit 옵션을 제거했습니다.
     with st.form("input_form"):
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -138,8 +129,8 @@ if menu == "📝 일별 입출고 기록":
         expiry_text = f" / 유통기한: {str(item_info['유통기한'])[:10]}" if pd.notna(item_info['유통기한']) else ""
         st.caption(f"📊 선택 품목 정보 ➡️ [엑셀 기본재고: {item_info['엑셀기본재고']}개{expiry_text}]")
         
-        # ★ 핵심 수정: 수량 입력창에 key를 연결하여 프로그램이 제어할 수 있도록 설정
-        quantity = st.number_input("4. 수량 입력 후 엔터(Enter)", min_value=0, step=1, key="qty_value")
+        # 수량 입력창
+        quantity = st.number_input("4. 수량 입력 후 엔터(Enter)", min_value=0, step=1, value=0)
         submit_btn = st.form_submit_button("💾 기록 저장하기 (또는 엔터)")
         
         if submit_btn:
@@ -154,12 +145,7 @@ if menu == "📝 일별 입출고 기록":
                 }])
                 log_df = pd.concat([log_df, new_data], ignore_index=True)
                 log_df.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-                
-                # ★ 핵심 수정: 성공 메시지를 세션에 임시 저장하고, 입력창을 0으로 만든 뒤 리런(Rerun)
-                st.session_state.success_msg = f"✅ 즉시 기록 완료: {selected_date} | {selected_item} | {type_io} {quantity}개"
-                st.session_state.qty_value = 0
-                st.unhandled_data = True # 안전장치
-                st.rerun()
+                st.success(f"✅ 즉시 기록 완료: {selected_date} | {selected_item} | {type_io} {quantity}개")
             else:
                 st.warning("⚠️ 수량을 1개 이상 입력하셔야 기록됩니다.")
 
