@@ -11,7 +11,7 @@ st.set_page_config(page_title="VINI COFFEE 재고관리 시스템", layout="wide
 
 @st.cache_data
 def load_master_data():
-    """기존 엑셀 시트(간략/원본 모두 대응)에서 81개 전 품목 정보, 유통기한, 초기재고를 파싱하는 함수"""
+    """기존 엑셀 시트에서 품목 정보를 파싱하되, 엑셀의 원본 행 순서를 그대로 유지하는 함수"""
     sheets_to_try = {
         "원재료": ["원재료(간략)", "원재료"],
         "부자재": ["부자재(간략)", "부자재"],
@@ -70,7 +70,7 @@ def load_master_data():
             if master_df_list:
                 return pd.concat(master_df_list, ignore_index=True)
         except Exception as e:
-            st.error(f"엑셀 81개 품목 로드 실패 (기본값 전환): {e}")
+            st.error(f"엑셀 품목 로드 실패 (기본값 전환): {e}")
             
     # 파일이 없거나 에러 발생 시 백업용 데이터 구조
     return pd.DataFrame([
@@ -85,10 +85,10 @@ if not os.path.exists(STOCK_LOG_FILE):
     df_empty = pd.DataFrame(columns=["날짜", "대분류", "품목명", "구분", "수량"])
     df_empty.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
 
-# 마스터 데이터 로드
+# 마스터 데이터 로드 (엑셀 등록 순서 유지)
 master_data = load_master_data()
 
-# --- 2번 기능: 유통기한 임박 알림 (30일 이내) ---
+# --- 유통기한 임박 알림 (30일 이내) ---
 st.title("☕ VINI COFFEE 안락동점 통합 재고관리 시스템")
 
 today = datetime.date.today()
@@ -117,17 +117,16 @@ if menu == "📝 일별 입출고 기록":
     st.subheader("일별 입출고 등록")
     st.info("💡 팁: 수량을 입력한 후 **엔터(Enter) 키**를 누르면 마우스 클릭 없이 즉시 저장됩니다!")
     
-    # 세션 상태 초기화 (입력값 유지/초기화 제어)
     if 'current_category' not in st.session_state:
         st.session_state.current_category = "원재료"
 
-    # 카테고리 선택 (Form 외부 배치하여 품목 자동 연동 리프레시 원활하게 설정)
+    # 카테고리 선택
     categories = list(master_data['대분류'].unique())
     selected_cat = st.selectbox("1. 품목 분류 선택", categories, key="cat_select")
     
-    # 선택된 분류의 품목 리스트
+    # 선택된 분류의 품목 리스트 (★핵심수정: sorted()를 제거하고 엑셀 등록 순서 그대로 추출)
     filtered_items = master_data[master_data['대분류'] == selected_cat]
-    item_list = sorted(filtered_items['품목명'].tolist())
+    item_list = filtered_items['품목명'].drop_duplicates().tolist()
     
     # 기록 양식 폼 (Enter키 전송 지원 구조)
     with st.form("input_form", clear_on_submit=True):
@@ -139,12 +138,12 @@ if menu == "📝 일별 입출고 기록":
         with col3:
             type_io = st.selectbox("3. 입/출고 구분", ["금월 입고", "월 소모(출고)"])
             
-        # 선택된 품목의 현재 엑셀상 재고 및 유통기한 실시간 안내
+        # 선택된 품목의 정보 실시간 안내
         item_info = filtered_items[filtered_items['품목명'] == selected_item].iloc[0]
         expiry_text = f" / 유통기한: {str(item_info['유통기한'])[:10]}" if pd.notna(item_info['유통기한']) else ""
         st.caption(f"📊 선택 품목 정보 ➡️ [엑셀 기본재고: {item_info['엑셀기본재고']}개{expiry_text}]")
         
-        # 수량 입력 (여기서 숫자를 넣고 엔터를 치면 바로 저장됩니다)
+        # 수량 입력 후 엔터 저장
         quantity = st.number_input("4. 수량 입력 후 엔터(Enter)", min_value=0, step=1, value=0)
         
         submit_btn = st.form_submit_button("💾 기록 저장하기 (또는 엔터)")
@@ -215,21 +214,20 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
             
             summary = summary.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
             
-            # 엑셀 기본 마스터 재고 데이터 정보 결합 (현재 실시간 재고 계산용)
-            summary = pd.merge(summary, master_data[['품목명', '엑셀기본재고']], on='품목명', how='left')
+            # 엑셀 기본 마스터 재고 데이터 정보 결합 및 순서 유지
+            summary = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고']], summary, on=['대분류', '품목명'], how='inner')
             summary['엑셀기본재고'] = summary['엑셀기본재고'].fillna(0).astype(int)
             summary['실시간 예상 현재고'] = summary['엑셀기본재고'] + summary['총 입고량'] - summary['총 소모량']
             
             st.markdown(f"### 📅 {selected_month} 품목별 종합 수불 집계")
             st.dataframe(summary, use_container_width=True)
             
-            # --- 3번 기능: 데이터 다운로드 기능 (백업용) ---
+            # 데이터 다운로드 기능
             st.markdown("---")
             st.subheader("💾 데이터 안전 백업 및 내보내기")
             
             col_b1, col_b2 = st.columns(2)
             with col_b1:
-                # 1. 월간 집계 데이터 다운로드
                 csv_summary = summary.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     label=f"📊 {selected_month} 월간 집계표 다운로드 (CSV)",
@@ -238,7 +236,6 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
                     mime="text/csv"
                 )
             with col_b2:
-                # 2. 누적된 전체 원본 일별 로그 다운로드
                 raw_csv = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig').to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
                     label="📝 지금까지 누적된 전체 일별 로그 백업 (CSV)",
