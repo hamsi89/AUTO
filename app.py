@@ -323,4 +323,3 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
                     file_name="vini_daily_stock_log_backup.csv",
                     mime="text/csv"
                 )
-                )
