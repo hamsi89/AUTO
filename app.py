@@ -86,12 +86,9 @@ if "qty_value" not in st.session_state:
 if "success_msg" not in st.session_state:
     st.session_state.success_msg = ""
 
-# --- 유통기한 임박 알림 ---
-st.title("☕ VINI COFFEE 안락동점 통합 재고관리 시스템")
-
+# --- 유통기한 임박 계산 로직 ---
 today = datetime.date.today()
 imminent_items = []
-
 for idx, row in master_data.iterrows():
     if pd.notna(row['유통기한']) and row['유통기한'] != 0 and str(row['유통기한']) != '1899-12-31':
         try:
@@ -102,12 +99,15 @@ for idx, row in master_data.iterrows():
         except:
             pass
 
+# 사이드바 유통기한 알림
+st.title("☕ VINI COFFEE 안락동점 통합 재고관리 시스템")
 if imminent_items:
     with st.sidebar.expander("🚨 유통기한 임박 품목 알림", expanded=True):
         for item in imminent_items:
             st.warning(item)
 
-menu = st.sidebar.radio("메뉴 이동", ["📝 일별 입출고 기록", "📊 월별 수불 대장 및 백업 다운로드"])
+# ★ 메뉴 구조에 '📋 실시간 현재고 현황판' 추가
+menu = st.sidebar.radio("메뉴 이동", ["📝 일별 입출고 기록", "📋 실시간 현재고 현황판", "📊 월별 수불 대장 및 백업 다운로드"])
 
 # 1) 매일 입출고 기록 화면
 if menu == "📝 일별 입출고 기록":
@@ -159,7 +159,7 @@ if menu == "📝 일별 입출고 기록":
             else:
                 st.warning("⚠️ 수량을 1개 이상 입력하셔야 기록됩니다.")
 
-    # 오늘의 입력 내역 현황
+    # 오늘의 입력 내역 현황 및 수정/삭제
     st.markdown("---")
     st.subheader("🔍 오늘 실시간 입력된 내역")
     log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
@@ -167,16 +167,11 @@ if menu == "📝 일별 입출고 기록":
     today_df = log_df[log_df["날짜"] == today_str]
     
     if not today_df.empty:
-        # 데이터프레임 왼쪽에 관리 번호를 포함하여 시각화
         display_df = today_df.copy()
         display_df.insert(0, '기록번호', today_df.index)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
         
-        # ★ [추가 기능] 실시간 기록 수정 및 삭제 관리자 영역
         with st.expander("🛠️ 방금 입력한 기록 수정 / 삭제하기", expanded=False):
-            st.write("잘못 입력된 행을 골라 수량을 변경하거나 삭제할 수 있습니다.")
-            
-            # 오늘 입력된 기록 인덱스를 선택 상자에 매핑 (보기 쉽게 가독성 변환)
             options = today_df.index.tolist()
             def make_label(idx):
                 row = today_df.loc[idx]
@@ -187,7 +182,6 @@ if menu == "📝 일별 입출고 기록":
                 selected_idx = st.selectbox("수정/삭제할 기록 줄 선택", options, format_func=make_label)
             with col_m2:
                 manage_action = st.radio("작업 선택", ["수량 수정", "기록 삭제"])
-                
             with col_m3:
                 current_target = today_df.loc[selected_idx]
                 if manage_action == "수량 수정":
@@ -204,13 +198,73 @@ if menu == "📝 일별 입출고 기록":
                 elif manage_action == "수량 수정":
                     log_df.loc[selected_idx, '수량'] = new_qty
                     st.session_state.success_msg = f"🔧 수량이 {new_qty}개로 정상 수정되었습니다."
-                
                 log_df.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
                 st.rerun()
     else:
         st.caption("오늘 아직 입력된 내역이 없습니다.")
 
-# 2) 월별 조회 및 백업 화면
+# ★ 2) [신규 메뉴] 실시간 현재고 현황판 화면
+elif menu == "📋 실시간 현재고 현황판":
+    st.subheader("📊 매장 실시간 현재고 현황판")
+    
+    log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+    
+    # 누적된 데이터를 바탕으로 실시간 총 입고/총 출고 계산
+    if not log_df.empty:
+        pivot_all = log_df.pivot_table(
+            index=['대분류', '품목명'], 
+            columns='구분', 
+            values='수량', 
+            aggfunc='sum'
+        ).fillna(0).reset_index()
+        if "금월 입고" not in pivot_all.columns: pivot_all["금월 입고"] = 0
+        if "월 소모(출고)" not in pivot_all.columns: pivot_all["월 소모(출고)"] = 0
+    else:
+        pivot_all = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
+        
+    # 마스터 데이터와 병합하여 전체 현재고 대시보드 생성
+    dashboard_df = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], pivot_all, on=['대분류', '품목명'], how='left').fillna(0)
+    dashboard_df['현재고'] = dashboard_df['엑셀기본재고'] + dashboard_df['금월 입고'] - dashboard_df['월 소모(출고)']
+    dashboard_df['현재고'] = dashboard_df['현재고'].astype(int)
+    
+    # 컬럼명 예쁘게 정리
+    dashboard_df = dashboard_df.rename(columns={"엑셀기본재고": "기본재고(이월)", "금월 입고": "누적 입고량", "월 소모(출고)": "누적 소모량"})
+    
+    # 대시보드 상단 요약 카드 (KPI Metrics)
+    total_count = len(dashboard_df)
+    shortage_count = len(dashboard_df[dashboard_df['현재고'] <= 0])
+    expiry_count = len(imminent_items)
+    
+    col_card1, col_card2, col_card3 = st.columns(3)
+    with col_card1:
+        st.metric(label="📦 관리 중인 전체 품목 수", value=f"{total_count}개")
+    with col_card2:
+        st.metric(label="⚠️ 재고 부족 및 품절 품목", value=f"{shortage_count}개", delta=f"-{shortage_count}" if shortage_count > 0 else "0", delta_color="inverse")
+    with col_card3:
+        st.metric(label="⏳ 유통기한 임박 품목 (30일 이내)", value=f"{expiry_count}개")
+        
+    st.markdown("---")
+    
+    # 검색 및 대분류 필터 UI
+    col_f1, col_f2 = st.columns([1, 2])
+    with col_f1:
+        filter_cat = st.radio("분류별 보기", ["전체"] + list(master_data['대분류'].unique()), horizontal=True)
+    with col_f2:
+        search_query = st.text_input("🔍 품목 이름 검색 (예: 우유, 컵, 커피)", "")
+        
+    # 필터링 적용
+    display_dash = dashboard_df.copy()
+    if filter_cat != "전체":
+        display_dash = display_dash[display_dash['대분류'] == filter_cat]
+    if search_query:
+        display_dash = display_dash[display_dash['품목명'].str.contains(search_query, case=False)]
+        
+    # 사용자가 보기 편하게 재고가 적은 순(품절 위험 순)으로 기본 정렬하여 노출
+    display_dash = display_dash.sort_values(by="현재고", ascending=True)
+    
+    st.dataframe(display_dash, use_container_width=True, hide_index=True)
+
+# 3) 월별 조회 및 백업 화면
 elif menu == "📊 월별 수불 대장 및 백업 다운로드":
     st.subheader("월별 수불 대장 및 데이터 다운로드")
     log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
@@ -268,4 +322,5 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
                     data=pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig').to_csv(index=False, encoding='utf-8-sig'),
                     file_name="vini_daily_stock_log_backup.csv",
                     mime="text/csv"
+                )
                 )
