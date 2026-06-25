@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import os
+import io  # ★ 엑셀 파일 변환을 위해 필요한 파이썬 기본 라이브러리 추가
 
 # 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_간략시트연동.xlsx"
@@ -280,7 +281,7 @@ elif menu == "📤 물품 출고 등록 (소모)":
                 
     show_today_logs_and_management()
 
-# 3) 실시간 현재고 현황판 (★ 가시성 대폭 업그레이드 버전)
+# 3) 실시간 현재고 현황판
 elif menu == "📋 실시간 현재고 현황판":
     st.subheader("📋 매장 실시간 현재고 현황판")
     
@@ -300,100 +301,10 @@ elif menu == "📋 실시간 현재고 현황판":
         
     dashboard_df = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], pivot_all, on=['대분류', '품목명'], how='left').fillna(0)
     
-    # ★ 입고량과 소모량의 소수점 제거 (.astype(int) 처리)
     dashboard_df['금월 입고'] = dashboard_df['금월 입고'].astype(int)
     dashboard_df['월 소모(출고)'] = dashboard_df['월 소모(출고)'].astype(int)
     
     dashboard_df['현재고'] = dashboard_df['엑셀기본재고'] + dashboard_df['금월 입고'] - dashboard_df['월 소모(출고)']
     dashboard_df['현재고'] = dashboard_df['현재고'].astype(int)
     
-    dashboard_df = dashboard_df.rename(columns={"엑셀기본재고": "기본재고(이월)", "금월 입고": "누적 입고량", "월 소모(출고)": "누적 소모량"})
-    
-    # ★ 상단 요약 카드 공간(관리품목, 품절품목, 임박품목)을 전면 삭제하여 리스트 영역을 위로 극대화
-    col_f1, col_f2 = st.columns([1, 2])
-    with col_f1: filter_cat = st.radio("분류별 필터", ["전체"] + list(master_data['대분류'].unique()), horizontal=True)
-    with col_f2: search_query = st.text_input("🔍 품목 실시간 키워드 검색", "")
-        
-    display_dash = dashboard_df.copy()
-    if filter_cat != "전체": display_dash = display_dash[display_dash['대분류'] == filter_cat]
-    if search_query: display_dash = display_dash[display_dash['품목명'].str.contains(search_query, case=False)]
-        
-    display_dash = display_dash.sort_values(by="현재고", ascending=True)
-    
-    def highlight_shortage(row):
-        styles = [''] * len(row)
-        if row['현재고'] <= 0:
-            idx = row.index.get_loc('현재고')
-            styles[idx] = 'background-color: #FADBD8; color: #78281F; font-weight: bold;'
-        return styles
-
-    if not display_dash.empty:
-        styled_dash = display_dash.style.apply(highlight_shortage, axis=1)
-        # 꽉 찬 화면 가시성 확보
-        st.dataframe(styled_dash, use_container_width=True, hide_index=True)
-    else:
-        st.caption("검색 조건에 맞는 품목이 없습니다.")
-
-# 4) 월별 조회 및 백업 화면
-elif menu == "📊 월별 수불 대장 및 백업 다운로드":
-    st.subheader("월별 수불 대장 및 데이터 다운로드")
-    log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-    
-    if log_df.empty:
-        st.info("아직 누적된 데이터가 없습니다.")
-    else:
-        log_df['날짜'] = pd.to_datetime(log_df['날짜'])
-        log_df['년월'] = log_df['날짜'].dt.to_period('M').astype(str)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            available_months = sorted(log_df['년월'].unique(), reverse=True)
-            selected_month = st.selectbox("조회할 월 선택", available_months)
-        with col2:
-            selected_cat = st.selectbox("분류 필터", ["전체"] + list(master_data['대분류'].unique()))
-            
-        filtered_df = log_df[log_df['년월'] == selected_month]
-        if selected_cat != "전체":
-            filtered_df = filtered_df[filtered_df['대분류'] == selected_cat]
-            
-        if filtered_df.empty:
-            st.warning("선택한 조건에 맞는 기록이 없습니다.")
-        else:
-            summary = filtered_df.pivot_table(
-                index=['대분류', '품목명'], 
-                columns='구분', 
-                values='수량', 
-                aggfunc='sum'
-            ).fillna(0).reset_index()
-            
-            if "금월 입고" not in summary.columns: summary["금월 입고"] = 0
-            if "월 소모(출고)" not in summary.columns: summary["월 소모(출고)"] = 0
-            
-            # 수불 대장에서도 소수점 제거 처리
-            summary['금월 입고'] = summary['금월 입고'].astype(int)
-            summary['월 소모(출고)'] = summary['월 소모(출고)'].astype(int)
-            
-            summary = summary.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
-            summary = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], summary, on=['대분류', '품목명'], how='inner')
-            summary['실시간 예상 현재고'] = summary['엑셀기본재고'] + summary['총 입고량'] - summary['총 소모량']
-            
-            st.markdown(f"### 📅 {selected_month} 품목별 종합 수불 집계")
-            st.dataframe(summary, use_container_width=True, hide_index=True)
-            
-            st.markdown("---")
-            st.subheader("💾 데이터 안전 백업 및 내보내기")
-            col_b1, col_b2 = st.columns(2)
-            with col_b1:
-                st.download_button(
-                    label=f"📊 {selected_month} 월간 집계표 다운로드",
-                    data=summary.to_csv(index=False, encoding='utf-8-sig'),
-                    file_name=f"vini_coffee_summary_{selected_month}.csv",
-                    mime="text/csv"
-                )
-            with col_b2:
-                st.download_button(
-                    label="📝 전체 일별 로그 백업 (CSV)",
-                    data=pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig').to_csv(index=False, encoding='utf-8-sig'),
-                    file_name="vini_daily_stock_log_backup.csv",
-                    mime="text/csv"
-                )
+    dashboard_df = dashboard_df.rename(columns={"
