@@ -6,7 +6,7 @@ import io
 
 # 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_간략시트연동.xlsx"
-CUSTOM_MASTER_FILE = "vini_custom_master.csv"  # ★ 품목 추가/삭제를 저장할 커스텀 마스터 파일
+CUSTOM_MASTER_FILE = "vini_custom_master.csv"  
 STOCK_LOG_FILE = "vini_daily_stock_log.csv"
 
 st.set_page_config(page_title="VINI COFFEE 재고관리 시스템", layout="wide")
@@ -76,12 +76,11 @@ def load_excel_master():
         {"품목명": "서울우유", "대분류": "원재료", "유통기한": "2026-06-25", "엑셀기본재고": 42}
     ])
 
-# 데이터 파일들 초기화 및 연동
+# 데이터 파일들 초기화
 if not os.path.exists(STOCK_LOG_FILE):
     df_empty = pd.DataFrame(columns=["날짜", "대분류", "품목명", "구분", "수량", "유통기한"])
     df_empty.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
 
-# ★ 커스텀 품목 관리 파일이 없으면 엑셀에서 최초 1회 동기화하여 생성
 if not os.path.exists(CUSTOM_MASTER_FILE):
     base_master = load_excel_master()
     base_master.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
@@ -118,7 +117,6 @@ for idx, row in master_data.iterrows():
                 imminent_items.append(f"• **{row['품목명']}** ({days_left}일 남음)")
         except:
             pass
-
 
 # --- 콜백 함수 구역 ---
 def save_inbound_callback():
@@ -168,12 +166,13 @@ if imminent_items:
         for item in imminent_items:
             st.warning(item)
 
-# ★ 메뉴 구성에 관리 메뉴 추가
+# ★ 메뉴 구성에 대망의 엑셀 일괄 입력 메뉴 전면 배치
 menu = st.sidebar.radio(
     "메뉴 이동", 
     [
-        "📥 물품 입고 등록 (+유통기한)", 
-        "📤 물품 출고 등록 (소모)", 
+        "📥 물품 입고 등록 (개별)", 
+        "📤 물품 출고 등록 (소모-개별)", 
+        "📝 전품목 일괄 입력 (엑셀 스타일)", # 신규 배정!
         "📋 실시간 현재고 현황판", 
         "📊 월별 수불 대장 및 백업 다운로드",
         "⚙️ 품목 추가/삭제 관리"
@@ -235,9 +234,9 @@ def show_today_logs_and_management():
         st.caption("오늘 아직 입력된 내역이 없습니다.")
 
 
-# 1) 입고 등록 메뉴
-if menu == "📥 물품 입고 등록 (+유통기한)":
-    st.subheader("📥 매장 물품 입고 등록")
+# 1) 입고 등록 메뉴(개별)
+if menu == "📥 물품 입고 등록 (개별)":
+    st.subheader("📥 매장 물품 입고 등록 (개별)")
     st.info("💡 입고 수량과 유통기한을 맞춘 후 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
     
     categories = list(master_data['대분류'].unique()) if not master_data.empty else ["원재료", "부자재", "디저트&완제품"]
@@ -247,7 +246,7 @@ if menu == "📥 물품 입고 등록 (+유통기한)":
     item_list = filtered_items['품목명'].drop_duplicates().tolist()
     
     if not item_list:
-        st.warning("선택한 분류에 등록된 품목이 없습니다. 품목 관리 메뉴에서 먼저 등록해 주세요.")
+        st.warning("등록된 품목이 없습니다.")
     else:
         with st.form("inbound_form"):
             col1, col2 = st.columns(2)
@@ -271,9 +270,9 @@ if menu == "📥 물품 입고 등록 (+유통기한)":
                     
         show_today_logs_and_management()
 
-# 2) 출고 등록 메뉴
-elif menu == "📤 물품 출고 등록 (소모)":
-    st.subheader("📤 매장 소모(출고) 등록")
+# 2) 출고 등록 메뉴(개별)
+elif menu == "📤 물품 출고 등록 (소모-개별)":
+    st.subheader("📤 매장 소모(출고) 등록 (개별)")
     st.info("💡 출고(소모) 수량을 입력한 뒤 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
     
     categories = list(master_data['대분류'].unique()) if not master_data.empty else ["원재료", "부자재", "디저트&완제품"]
@@ -283,7 +282,7 @@ elif menu == "📤 물품 출고 등록 (소모)":
     item_list = filtered_items['품목명'].drop_duplicates().tolist()
     
     if not item_list:
-        st.warning("선택한 분류에 등록된 품목이 없습니다. 품목 관리 메뉴에서 먼저 등록해 주세요.")
+        st.warning("등록된 품목이 없습니다.")
     else:
         with st.form("outbound_form"):
             col1, col2 = st.columns(2)
@@ -299,7 +298,123 @@ elif menu == "📤 물품 출고 등록 (소모)":
                     
         show_today_logs_and_management()
 
-# 3) 실시간 현재고 현황판
+# ★ 3) [신규 스페셜 메뉴] 전품목 일괄 입력 (엑셀 스타일)
+elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
+    st.subheader("📝 전품목 일괄 입력 (엑셀 스타일)")
+    st.info("💡 여러 품목의 오늘 입고 수량과 소모 수량을 아래 표에 한 번에 입력한 뒤, 하단의 [일괄 저장하기] 버튼을 누르시면 한 큐에 기록됩니다!")
+    
+    # 공통 적용 날짜 선택
+    col_t1, col_t2 = st.columns([1, 2])
+    with col_t1:
+        bulk_date = st.date_input("🗓️ 기록할 날짜 선택", datetime.date.today(), key="bulk_date")
+    with col_t2:
+        bulk_cat = st.radio("분류 필터링", ["전체"] + list(master_data['대분류'].unique()), horizontal=True, key="bulk_cat")
+        
+    current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+    
+    # 참고용 실시간 현재고 계산하기
+    if not current_logs.empty:
+        pivot_all = current_logs.pivot_table(
+            index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum'
+        ).fillna(0).reset_index()
+        if "금월 입고" not in pivot_all.columns: pivot_all["금월 입고"] = 0
+        if "월 소모(출고)" not in pivot_all.columns: pivot_all["월 소모(출고)"] = 0
+    else:
+        pivot_all = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
+        
+    # 편집용 임시 대시보드 데이터 테이블 조합
+    bulk_df = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], pivot_all, on=['대분류', '품목명'], how='left').fillna(0)
+    bulk_df['현재고'] = bulk_df['엑셀기본재고'] + bulk_df['금월 입고'] - bulk_df['월 소모(출고)']
+    bulk_df['현재고'] = bulk_df['현재고'].astype(int)
+    
+    # 엑셀처럼 타이핑할 빈 컬럼(0) 추가 생성
+    bulk_df['📥 오늘 입고량'] = 0
+    bulk_df['📤 오늘 소모량'] = 0
+    
+    # 컬럼 순서 및 명칭 필터링
+    bulk_df = bulk_df.rename(columns={"유통기한": "⏳ 유통기한"})
+    display_bulk = bulk_df[['대분류', '품목명', '현재고', '📥 오늘 입고량', '📤 오늘 소모량', '⏳ 유통기한']].copy()
+    
+    # 사용자가 라디오 필터를 바꿨다면 가공
+    if bulk_cat != "전체":
+        display_bulk = display_bulk[display_bulk['대분류'] == bulk_cat]
+        
+    # 대망의 데이터 에디터 출력 구역
+    edited_bulk = st.data_editor(
+        display_bulk,
+        column_config={
+            "대분류": st.column_config.TextColumn("분류", disabled=True),
+            "품목명": st.column_config.TextColumn("품목명", disabled=True),
+            "현재고": st.column_config.NumberColumn("현재고 (참고용)", disabled=True, format="%d"),
+            "📥 오늘 입고량": st.column_config.NumberColumn("오늘 입고량 입력", min_value=0, step=1, format="%d"),
+            "📤 오늘 소모량": st.column_config.NumberColumn("오늘 소모량 입력", min_value=0, step=1, format="%d"),
+            "⏳ 유통기한": st.column_config.TextColumn("유통기한 입력 (변경 시 수정 가능)"),
+        },
+        use_container_width=True,
+        hide_index=True,
+        key="bulk_data_editor"
+    )
+    
+    # 저장 실행 메커니즘
+    if st.button("💾 위 입력된 모든 내역 일괄 저장하기", use_container_width=True):
+        batch_new_logs = []
+        master_update_needed = False
+        
+        for idx, row in edited_bulk.iterrows():
+            p_name = row['품목명']
+            p_cat = row['대분류']
+            in_val = int(row['📥 오늘 입고량'])
+            out_val = int(row['📤 오늘 소모량'])
+            utg_val = str(row['⏳ 유통기한']).strip() if pd.notna(row['⏳ 유통기한']) else ""
+            
+            # 1. 만약 사용자가 유통기한 글자를 고쳤다면 마스터 파일 동시 갱신 체크
+            orig_match = master_data[master_data['품목명'] == p_name]
+            if not orig_match.empty:
+                orig_utg = str(orig_match.iloc[0]['유통기한']).strip()
+                if utg_val != orig_utg:
+                    master_data.loc[master_data['품목명'] == p_name, '유통기한'] = utg_val
+                    master_update_needed = True
+            
+            # 2. 오늘 입고량이 적혀 있으면 배치 배열에 담기
+            if in_val > 0:
+                batch_new_logs.append({
+                    "날짜": bulk_date.strftime("%Y-%m-%d"),
+                    "대분류": p_cat,
+                    "품목명": p_name,
+                    "구분": "금월 입고",
+                    "수량": in_val,
+                    "유통기한": utg_val
+                })
+                
+            # 3. 오늘 소모량이 적혀 있으면 배치 배열에 담기
+            if out_val > 0:
+                batch_new_logs.append({
+                    "날짜": bulk_date.strftime("%Y-%m-%d"),
+                    "대분류": p_cat,
+                    "품목명": p_name,
+                    "구분": "월 소모(출고)",
+                    "수량": out_val,
+                    "유통기한": ""
+                })
+                
+        # 배열의 데이터를 한 번에 파일 시스템에 쓰기
+        if batch_new_logs or master_update_needed:
+            if batch_new_logs:
+                existing_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+                combined_logs = pd.concat([existing_logs, pd.DataFrame(batch_new_logs)], ignore_index=True)
+                combined_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+                
+            if master_update_needed:
+                master_data.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
+                
+            st.session_state.success_msg = f"🚀 일괄 등록 성공: 총 {len(batch_new_logs)}건의 재고 변동 내역이 100% 안전하게 누적 저장되었습니다!"
+            st.rerun()
+        else:
+            st.warning("⚠️ 표에 숫자가 기입된 내역이 없습니다. 입고량이나 소모량을 적은 후 저장 버튼을 눌러주세요.")
+
+    show_today_logs_and_management()
+
+# 4) 실시간 현재고 현황판
 elif menu == "📋 실시간 현재고 현황판":
     st.subheader("📋 매장 실시간 현재고 현황판")
     
@@ -328,29 +443,29 @@ elif menu == "📋 실시간 현재고 현황판":
     dashboard_df = dashboard_df.rename(columns={"엑셀기본재고": "기본재고(이월)", "금월 입고": "누적 입고량", "월 소모(출고)": "누적 소모량"})
     
     col_f1, col_f2 = st.columns([1, 2])
-    with col_f1: filter_cat = st.radio("분류별 필터", ["전체"] + (list(master_data['대분류'].unique()) if not master_data.empty else []), horizontal=True)
+    with col_f1: filter_cat = st.radio("분류별 필터", ["전체"] + list(master_data['대분류'].unique()), horizontal=True)
     with col_f2: search_query = st.text_input("🔍 품목 실시간 키워드 검색", "")
         
     display_dash = dashboard_df.copy()
     if filter_cat != "전체": display_dash = display_dash[display_dash['대분류'] == filter_cat]
     if search_query: display_dash = display_dash[display_dash['품목명'].str.contains(search_query, case=False)]
         
-    if not display_dash.empty:
-        display_dash = display_dash.sort_values(by="현재고", ascending=True)
-        
-        def highlight_shortage(row):
-            styles = [''] * len(row)
-            if row['현재고'] <= 0:
-                idx = row.index.get_loc('현재고')
-                styles[idx] = 'background-color: #FADBD8; color: #78281F; font-weight: bold;'
-            return styles
+    display_dash = display_dash.sort_values(by="현재고", ascending=True)
+    
+    def highlight_shortage(row):
+        styles = [''] * len(row)
+        if row['현재고'] <= 0:
+            idx = row.index.get_loc('현재고')
+            styles[idx] = 'background-color: #FADBD8; color: #78281F; font-weight: bold;'
+        return styles
 
+    if not display_dash.empty:
         styled_dash = display_dash.style.apply(highlight_shortage, axis=1)
         st.dataframe(styled_dash, use_container_width=True, hide_index=True)
     else:
         st.caption("검색 조건에 맞는 품목이 없습니다.")
 
-# 4) 월별 조회 및 백업 화면
+# 5) 월별 조회 및 백업 화면
 elif menu == "📊 월별 수불 대장 및 백업 다운로드":
     st.subheader("월별 수불 대장 및 데이터 다운로드")
     log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
@@ -366,7 +481,7 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
             available_months = sorted(log_df['년월'].unique(), reverse=True)
             selected_month = st.selectbox("조회할 월 선택", available_months)
         with col2:
-            selected_cat = st.selectbox("분류 필터", ["전체"] + (list(master_data['대분류'].unique()) if not master_data.empty else []))
+            selected_cat = st.selectbox("분류 필터", ["전체"] + list(master_data['대분류'].unique()))
             
         filtered_df = log_df[log_df['년월'] == selected_month]
         if selected_cat != "전체":
@@ -412,27 +527,26 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
             col_b1, col_b2 = st.columns(2)
             with col_b1:
                 st.download_button(
-                    label=f"🟢 {selected_month} 월간 집계표 다운로드 (Excel)",
+                    label=f"📊 {selected_month} 월간 집계표 다운로드 (Excel)",
                     data=excel_summary_bytes,
                     file_name=f"vini_coffee_summary_{selected_month}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             with col_b2:
                 st.download_button(
-                    label="🟢 전체 일별 로그 백업 다운로드 (Excel)",
+                    label="📝 전체 일별 로그 백업 다운로드 (Excel)",
                     data=excel_raw_bytes,
                     file_name="vini_daily_stock_log_backup.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-# ★ 5) [신규 메뉴] 품목 추가 / 삭제 관리 화면
+# 6) 품목 추가 / 삭제 관리 화면
 elif menu == "⚙️ 품목 추가/삭제 관리":
     st.subheader("⚙️ 매장 품목 추가 및 삭제 관리")
     st.write("엑셀 파일을 직접 수정하지 않고, 재고관리 시스템 상에서 물품을 자유롭게 추가하거나 삭제할 수 있습니다.")
     
     col_a, col_b = st.columns(2)
     
-    # 1. 신규 품목 추가 섹션
     with col_a:
         st.markdown("### 📥 신규 품목 추가")
         with st.form("add_item_form", clear_on_submit=True):
@@ -447,7 +561,7 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                 if not add_name.strip():
                     st.error("⚠️ 품목 이름을 공백으로 추가할 수 없습니다.")
                 elif add_name.strip() in master_data['품목명'].values:
-                    st.warning(f"⚠️ 이미 존재하 거나 중복된 품목명입니다: {add_name}")
+                    st.warning(f"⚠️ 이미 존재하는 품목명입니다: {add_name}")
                 else:
                     new_row = pd.DataFrame([{
                         "품목명": add_name.strip(),
@@ -460,7 +574,6 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                     st.success(f"✅ 신규 품목 등록 성공: [{add_cat}] {add_name}")
                     st.rerun()
 
-    # 2. 기존 품목 삭제 섹션
     with col_b:
         st.markdown("### ❌ 기존 품목 삭제 (단종)")
         if master_data.empty:
@@ -472,7 +585,7 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
             item_details = master_data[master_data['품목명'] == target_delete_item].iloc[0]
             st.caption(f"💡 선택된 품목 정보 ➡️ 분류: {item_details['대분류']} / 기본재고: {item_details['엑셀기본재고']}개")
             
-            st.warning("🚨 품목을 삭제하면 실시간 현황판 및 입력 목록에서 제거됩니다. (기존에 입력해 둔 입출고 로그 데이터는 지워지지 않고 보존됩니다.)")
+            st.warning("🚨 품목을 삭제하면 실시간 현황판 및 입력 목록에서 제거됩니다. (기존 로그 데이터는 안전하게 유지됩니다.)")
             submit_delete = st.button("❌ 선택 품목 영구 삭제 확정")
             
             if submit_delete:
@@ -481,7 +594,6 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                 st.success(f"❌ 품목 삭제 완료: {target_delete_item}")
                 st.rerun()
                 
-    # 하단에 현재 연동 중인 총 마스터 리스트 상태 투명하게 노출
     st.markdown("---")
     st.subheader(f"📋 현재 등록되어 사용 중인 전체 품목 목록 ({len(master_data)}개)")
     st.dataframe(master_data.sort_values(by=["대분류", "품목명"]), use_container_width=True, hide_index=True)
