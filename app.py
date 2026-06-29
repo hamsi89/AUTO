@@ -1,117 +1,334 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 import os
+from datetime import datetime
 
-# 원본 엑셀 파일 경로 설정 (본인 환경에 맞게 조정)
+# ==========================================
+# 1. 환경 설정 및 초기화
+# ==========================================
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
+STOCK_LOG_FILE = "vini_daily_stock_log.csv"
 
-st.subheader("📊 전품목 일괄 재고 조정 및 다운로드")
+# 페이지 레이아웃 설정
+st.set_page_config(page_title="VINI COFFEE 재고관리 시스템", layout="wide", page_icon="☕")
 
-# 1. 작업할 대분류 선택
-selected_cat = st.selectbox(
-    "일괄 수정할 대분류를 선택하세요", 
-    ["원재료", "부자재", "디저트&완제품"], 
-    key="bulk_cat_select"
-)
+# 임시 히스토리용 CSV 로그 파일이 없을 경우 초기화
+if not os.path.exists(STOCK_LOG_FILE):
+    df_empty = pd.DataFrame(columns=["날짜", "대분류", "품목명", "구분", "수량", "유통기한"])
+    df_empty.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
 
-# 엑셀 시트명 매핑 (기존 시스템 규칙 반영)
-sheet_map = {
+# 세션 상태(Session State) 메시지 및 캐시 제어 초기화
+if "success_msg" not in st.session_state:
+    st.session_state.success_msg = ""
+
+# 실제 엑셀 파일 내 시트 이름 매핑 규칙 정의
+SHEET_MAP = {
     "원재료": "원재료(간략)",
     "부자재": "부자재(간략)",
     "디저트&완제품": "디저트&완제품(간략)"
 }
-target_sheet = sheet_map[selected_cat]
 
-if os.path.exists(ORIGINAL_EXCEL_PATH):
-    # 2. 원본 엑셀에서 현재 데이터 읽어오기 (헤더 위치 skiprows=2 가정)
+
+# ==========================================
+# 2. 핵심 로직 함수 (서버 원본 엑셀 핸들링)
+# ==========================================
+
+def update_single_excel(cat, item_name, qty, new_expiry=None, action="inbound"):
+    """[기능 1] 개별 단건 입출고 발생 시 서버의 원본 엑셀을 실시간으로 수정하는 함수"""
+    if not os.path.exists(ORIGINAL_EXCEL_PATH):
+        st.error(f"❌ 서버에서 원본 엑셀 파일을 찾을 수 없습니다: {ORIGINAL_EXCEL_PATH}")
+        return False
+
     try:
-        df_current = pd.read_excel(ORIGINAL_EXCEL_PATH, sheet_name=target_sheet, skiprows=2)
+        # openpyxl로 서버 파일 로드
+        wb = openpyxl.load_workbook(ORIGINAL_EXCEL_PATH)
+        target_sheet = SHEET_MAP.get(cat, cat)
         
-        # 공백 칼럼이나 이름 없는 칼럼 정제
-        df_current = df_current.loc[:, ~df_current.columns.str.contains('^Unnamed')]
+        if target_sheet not in wb.sheetnames:
+            st.error(f"❌ 엑셀 파일 내에 '{target_sheet}' 시트가 존재하지 않습니다.")
+            return False
+            
+        ws = wb[target_sheet]
+        header_row = 3  # skiprows=2 (3번째 행이 헤더 명칭 라인)
         
-        st.write(f"👉 아래 테이블에서 **[금월 입고]** 또는 **[금월 출고]** 컬럼의 수량을 직접 수정하세요.")
-        st.caption("팁: 셀을 더블클릭하면 숫자를 입력할 수 있습니다.")
-        
-        # 3. Streamlit Data Editor를 통한 사용자 입력 받기
-        # '품목명', '현재재고' 등은 수정 못하게 잠그고, 입고/출고 컬럼만 활성화
-        edited_df = st.data_editor(
-            df_current,
-            use_container_width=True,
-            hide_index=True,
-            disabled=["바코드", "코드", "품목명", "품목이름", "구분", "현재재고", "이월재고"] # 수정 금지할 칼럼들
-        )
-        
-        # 4. 저장 및 동기화 버튼
-        if st.button("💾 변경사항 원본 엑셀에 일괄 반영하기", type="primary"):
-            with st.spinner("서버의 엑셀 파일을 업데이트하고 다운로드 링크를 생성 중입니다..."):
+        # 동적 칼럼 인덱스 매핑 파싱
+        name_col_idx, stock_col_idx, expiry_col_idx = None, None, None
+        for col in range(1, ws.max_column + 1):
+            val = str(ws.cell(row=header_row, column=col).value).strip().replace(" ", "")
+            if '품목명' in val or '품목이름' in val or '구분' in val:
+                name_col_idx = col
+            elif '재고' in val:
+                stock_col_idx = col
+            elif '유통' in val:
+                expiry_col_idx = col
+
+        if not name_col_idx or not stock_col_idx:
+            st.error("❌ 엑셀 헤더 열 구조를 파싱할 수 없습니다. ('품목명' 또는 '재고' 열 확인 필요)")
+            return False
+
+        # 행단위 품목 탐색 후 데이터 수정
+        item_found = False
+        for row in range(header_row + 1, ws.max_row + 1):
+            cell_item_name = str(ws.cell(row=row, column=name_col_idx).value).strip()
+            
+            if cell_item_name == item_name:
+                current_stock_cell = ws.cell(row=row, column=stock_col_idx)
+                
+                # 기존 재고 수치 안전하게 정수 변환
                 try:
-                    # openpyxl로 원본 엑셀 로드
+                    current_stock = int(current_stock_cell.value) if current_stock_cell.value is not None else 0
+                except:
+                    current_stock = 0
+
+                # 입고(+) 및 출고(-) 수량 누적 연산 처리
+                if action == "inbound":
+                    current_stock_cell.value = current_stock + qty
+                elif action == "outbound":
+                    current_stock_cell.value = max(0, current_stock - qty) # 음수 방지
+
+                # 유통기한 데이터 실시간 반영
+                if new_expiry and expiry_col_idx:
+                    ws.cell(row=row, column=expiry_col_idx).value = new_expiry
+                
+                item_found = True
+                break
+
+        if not item_found:
+            st.error(f"❌ '{item_name}' 품목을 엑셀 파일 안에서 찾을 수 없습니다.")
+            return False
+
+        # 변경 완료 후 파일 잠금 해제 및 저장
+        wb.save(ORIGINAL_EXCEL_PATH)
+        wb.close()
+        return True
+    except Exception as e:
+        st.error(f"❌ 엑셀 실시간 수정 처리 중 오류가 발생했습니다: {e}")
+        return False
+
+
+# ==========================================
+# 3. 콜백 함수 (단건 버튼 이벤트 제어)
+# ==========================================
+
+def save_inbound_callback():
+    """개별 단건 입고 등록 실행 프로세스"""
+    qty = st.session_state.in_qty
+    if qty > 0:
+        cat = st.session_state.in_cat
+        item = st.session_state.in_item
+        expiry_str = st.session_state.in_utg.strftime("%Y-%m-%d")
+        
+        # 1단계: 원본 엑셀 실시간 동기화 업데이트
+        if update_single_excel(cat, item, qty, new_expiry=expiry_str, action="inbound"):
+            # 2단계: 히스토리 백업용 CSV 로그 누적
+            current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+            new_data = pd.DataFrame([{
+                "날짜": st.session_state.in_date.strftime("%Y-%m-%d"),
+                "대분류": cat,
+                "품목명": item,
+                "구분": "금월 입고",
+                "수량": qty,
+                "유통기한": expiry_str
+            }])
+            current_logs = pd.concat([current_logs, new_data], ignore_index=True)
+            current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+            
+            st.session_state.success_msg = f"📥 [엑셀 반영 완료] 입고: {item} | {qty}개가 마스터 파일에 가산되었습니다."
+            st.session_state.in_qty = 0  # 입력 컴포넌트 초기화
+            st.cache_data.clear()        # 화면 동기화를 위해 메모리 캐시 삭제
+    else:
+        st.warning("⚠️ 입고 수량을 최소 1개 이상 입력하셔야 합니다.")
+
+def save_outbound_callback():
+    """개별 단건 출고 등록 실행 프로세스"""
+    qty = st.session_state.out_qty
+    if qty > 0:
+        cat = st.session_state.out_cat
+        item = st.session_state.out_item
+        
+        # 1단계: 원본 엑셀 실시간 동기화 업데이트
+        if update_single_excel(cat, item, qty, action="outbound"):
+            # 2단계: 히스토리 백업용 CSV 로그 누적
+            current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+            new_data = pd.DataFrame([{
+                "날짜": st.session_state.out_date.strftime("%Y-%m-%d"),
+                "대분류": cat,
+                "품목명": item,
+                "구분": "금월 출고",
+                "수량": qty,
+                "유통기한": "-"
+            }])
+            current_logs = pd.concat([current_logs, new_data], ignore_index=True)
+            current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+            
+            st.session_state.success_msg = f"📤 [엑셀 반영 완료] 출고: {item} | {qty}개가 마스터 파일에서 차감되었습니다."
+            st.session_state.out_qty = 0  # 입력 컴포넌트 초기화
+            st.cache_data.clear()         # 화면 동기화를 위해 메모리 캐시 삭제
+    else:
+        st.warning("⚠️ 출고 수량을 최소 1개 이상 입력하셔야 합니다.")
+
+
+# ==========================================
+# 4. 메인 UI 레이아웃 구성
+# ==========================================
+
+st.title("☕ VINI COFFEE 통합 식자재 및 마감 관리 시스템")
+
+# 상단 실시간 알림창 출력 구역
+if st.session_state.success_msg:
+    st.success(st.session_state.success_msg)
+    st.session_state.success_msg = "" # 메시지 큐 초기화
+
+# 인터페이스 기능별 탭 분할
+tab1, tab2, tab3 = st.tabs([
+    "✨ 실시간 현황판 및 개별 등록", 
+    "📊 전품목 일괄 조정 & 즉시 다운로드", 
+    "📜 단건 입출고 히스토리 대장"
+])
+
+# ------------------------------------------
+# TAB 1: 실시간 마스터 엑셀 현황 조회 및 개별 건수 조작
+# ------------------------------------------
+with tab1:
+    st.header("🔍 원본 엑셀 실시간 현황판")
+    
+    if os.path.exists(ORIGINAL_EXCEL_PATH):
+        # 상단 라디오 버튼으로 시트 전환
+        view_cat = st.radio("카테고리를 전환하며 재고를 확인하세요", ["원재료", "부자재", "디저트&완제품"], horizontal=True)
+        target_sheet = SHEET_MAP[view_cat]
+        
+        # 현재 서버 원본 데이터 실시간 로드 및 미사용 열 전처리
+        df_view = pd.read_excel(ORIGINAL_EXCEL_PATH, sheet_name=target_sheet, skiprows=2)
+        df_view = df_view.loc[:, ~df_view.columns.str.contains('^Unnamed')]
+        st.dataframe(df_view, use_container_width=True, hide_index=True)
+        
+        # 셀렉트박스용 유효 품목 리스트 바인딩
+        name_col = "품목명" if "품목명" in df_view.columns else (df_view.columns[1] if len(df_view.columns)>1 else df_view.columns[0])
+        item_list = df_view[name_col].dropna().unique().tolist()
+        
+        # 단건 등록 레이아웃 (2열 종대 분할)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("---")
+            st.markdown("### 📥 단건 실시간 입고 등록")
+            st.date_input("입고 일자", datetime.now(), key="in_date")
+            st.selectbox("대분류 구분", ["원재료", "부자재", "디저트&완제품"], key="in_cat")
+            st.selectbox("등록할 품목명 선택", item_list, key="in_item")
+            st.number_input("입고 수량(EA)", min_value=0, step=1, key="in_qty")
+            st.date_input("유통기한 기입", datetime.now(), key="in_utg")
+            st.button("📥 입고 데이터 엑셀 전송", on_click=save_inbound_callback)
+
+        with col2:
+            st.markdown("---")
+            st.markdown("### 📤 단건 실시간 출고 등록")
+            st.date_input("출고 일자", datetime.now(), key="out_date")
+            st.selectbox("대분류 구분", ["원재료", "부자재", "디저트&완제품"], key="out_cat")
+            st.selectbox("등록할 품목명 선택", item_list, key="out_item")
+            st.number_input("출고 수량(EA)", min_value=0, step=1, key="out_qty")
+            st.button("📤 출고 데이터 엑셀 전송", on_click=save_outbound_callback)
+    else:
+        st.error(f"서버 내부 경로에 원본 마스터 엑셀 파일이 존재하지 않습니다: {ORIGINAL_EXCEL_PATH}")
+
+# ------------------------------------------
+# TAB 2: 전품목 한 눈에 일괄 편집 후 마스터 엑셀 즉시 추출
+# ------------------------------------------
+with tab2:
+    st.header("📊 전품목 일괄 마감 처리 및 원본 파일 다운로드")
+    
+    bulk_cat = st.selectbox("일괄 편집 및 다운로드할 시트 선택", ["원재료", "부자재", "디저트&완제품"], key="bulk_cat")
+    bulk_sheet = SHEET_MAP[bulk_cat]
+    
+    if os.path.exists(ORIGINAL_EXCEL_PATH):
+        try:
+            # 원본 데이터 로드
+            df_bulk = pd.read_excel(ORIGINAL_EXCEL_PATH, sheet_name=bulk_sheet, skiprows=2)
+            df_bulk = df_bulk.loc[:, ~df_bulk.columns.str.contains('^Unnamed')]
+            
+            st.info("💡 **일괄 작업 프로세스**\n1. 테이블 내부의 **[금월 입고]** 또는 **[금월 출고]** 입력란을 마우스로 더블클릭하여 오늘 변경된 모든 수량을 채워 넣습니다.\n2. 하단의 **[변경사항 원본 엑셀에 일괄 반영하기]** 버튼을 클릭하여 서버 파일을 저장합니다.\n3. 저장이 끝나면 그 자리에 나타나는 **[다운로드]** 링크를 클릭해 완성된 파일을 로컬 PC로 가져갑니다.")
+            
+            # 사고 방지용 락(Lock) 설계: 입고, 출고, 유통기한 제외 품목 고유 명세 정보 수정 불가능 고정
+            disable_cols = [c for c in df_bulk.columns if "입고" not in c and "출고" not in c and "유통" not in c]
+            
+            # Streamlit 그리드 편집 인터페이스 오픈
+            edited_df = st.data_editor(
+                df_bulk,
+                use_container_width=True,
+                hide_index=True,
+                disabled=disable_cols
+            )
+            
+            # 서버 마스터 파일 오버라이트 프로세스 실행 버튼
+            if st.button("💾 변경사항 원본 엑셀에 일괄 반영하기", type="primary", key="bulk_save_btn"):
+                with st.spinner("서버의 마스터 엑셀 시트에 데이터 일괄 수산 작업 진행 중..."):
                     wb = openpyxl.load_workbook(ORIGINAL_EXCEL_PATH)
-                    ws = wb[target_sheet]
-                    
-                    # 엑셀의 칼럼 매핑 분석 (3번째 행이 헤더인 경우)
+                    ws = wb[bulk_sheet]
                     header_row = 3
-                    col_map = {}
-                    for col in range(1, ws.max_column + 1):
-                        val = str(ws.cell(row=header_row, column=col).value).strip().replace(" ", "")
-                        col_map[val] = col
                     
-                    # 필수 칼럼 인덱스 확인
+                    # 칼럼 딕셔너리 빌드
+                    col_map = {str(ws.cell(row=header_row, column=c).value).strip().replace(" ", ""): c for c in range(1, ws.max_column + 1)}
+                    
                     name_idx = col_map.get("품목명") or col_map.get("품목이름") or col_map.get("구분")
-                    stock_idx = col_map.get("현재재고") or col_map.get("재고")
                     inbound_idx = col_map.get("금월입고") or col_map.get("입고")
                     outbound_idx = col_map.get("금월출고") or col_map.get("출고")
+                    expiry_idx = col_map.get("유통기한") or col_map.get("유통")
                     
-                    if not name_idx or not stock_idx:
-                        st.error("엑셀 파일에서 '품목명' 또는 '재고' 칼럼 위치를 찾지 못했습니다.")
+                    if not name_idx:
+                        st.error("❌ 엑셀 구조가 기준 규격과 상이하여 '품목명' 열을 찾지 못했습니다.")
                     else:
-                        # 화면에서 편집된 데이터프레임을 한 행씩 돌며 엑셀 파일에 대입
+                        # 사용자가 수정한 데이터프레임의 모든 행을 순회하며 openpyxl 엔진으로 강제 주입
                         for _, row in edited_df.iterrows():
-                            item_name = str(row.get("품목명") or row.get("품목이름") or row.get("구분")).strip()
+                            # 데이터프레임 상의 품목명 탐색
+                            grid_item_name = str(row.get(df_bulk.columns[df_bulk.columns.isin(["품목명","품목이름","구분"])][0])).strip()
                             
-                            # 엑셀에서 동일한 품목명을 가진 행 찾기
                             for r in range(header_row + 1, ws.max_row + 1):
                                 excel_item_name = str(ws.cell(row=r, column=name_idx).value).strip()
                                 
-                                if excel_item_name == item_name:
-                                    # 사용자가 입력한 입고, 출고 값 반영 (비어있으면 0)
+                                if excel_item_name == grid_item_name:
+                                    # 예외 필터링 (결측치 데이터 0 초기화)
                                     in_val = row.get("금월 입고") or row.get("입고") or 0
                                     out_val = row.get("금월 출고") or row.get("출고") or 0
+                                    exp_val = row.get("유통기한") or row.get("유통") or ""
                                     
-                                    # 엑셀 셀에 직접 값 주입
                                     if inbound_idx: ws.cell(row=r, column=inbound_idx).value = int(in_val)
                                     if outbound_idx: ws.cell(row=r, column=outbound_idx).value = int(out_val)
-                                    
-                                    # 계산 공식이 아니라 값으로 연산할 경우 재고 최신화 (옵션)
-                                    # (만약 엑셀 내부에 =이월+입고-출고 수식이 걸려있다면 이 단계는 건너뛰어도 됩니다)
+                                    if expiry_idx and exp_val: ws.cell(row=r, column=expiry_idx).value = str(exp_val)
                                     break
                         
-                        # 변경된 파일 저장
+                        # 엑셀 파일 저장 및 연결 종료
                         wb.save(ORIGINAL_EXCEL_PATH)
                         wb.close()
+                        st.cache_data.clear() # 수정 사항 적용을 위한 캐시 만료 처리
                         
-                        # 캐시 초기화하여 화면 리프레시 준비
-                        st.cache_data.clear()
-                        st.success("✅ 서버 원본 엑셀 파일 수정이 안전하게 완료되었습니다!")
+                        st.success("🎉 원본 엑셀 파일이 성공적으로 업데이트되었습니다! 이제 아래 버튼을 눌러 소장용 파일로 받아 가세요.")
                         
-                        # 5. 수정한 엑셀 파일을 읽어서 바로 다운로드 버튼으로 제공
+                        # 방금 저장된 따끈따끈한 최신 파일을 바이너리로 로드
                         with open(ORIGINAL_EXCEL_PATH, "rb") as f:
-                            excel_data = f.read()
+                            file_bytes = f.read()
                         
+                        # 직관적인 원클릭 다운로드 단추 노출
                         st.download_button(
-                            label="📥 변경된 통합 엑셀 파일 즉시 다운로드",
-                            data=excel_data,
-                            file_name=f"🟢최신반영_{ORIGINAL_EXCEL_PATH}",
+                            label="📥 즉시 동기화 완료된 원본 엑셀 파일 다운로드 (.xlsx)",
+                            data=file_bytes,
+                            file_name=f"🟢최신반영_VINI_식자재매출관리_{datetime.now().strftime('%m%d_%H%M')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
-                        
-                except Exception as e:
-                    st.error(f"엑셀 동기화/파일 작업 중 에러 발생: {e}")
-                    
-    except Exception as e:
-        st.error(f"데이터를 읽어오는 중 에러가 발생했습니다: {e}")
-else:
-    st.error(f"지정된 경로에서 원본 엑셀 파일을 찾을 수 없습니다: {ORIGINAL_EXCEL_PATH}")
+        except Exception as e:
+            st.error(f"❌ 일괄 편집 스트리밍 처리 오류: {e}")
+    else:
+        st.error(f"서버 내부 경로에 원본 마스터 엑셀 파일이 존재하지 않습니다: {ORIGINAL_EXCEL_PATH}")
+
+# ------------------------------------------
+# TAB 3: 백업 히스토리용 간이 영수증 CSV 로그 뷰어
+# ------------------------------------------
+with tab3:
+    st.header("📜 실시간 단건 입출고 이력 데이터")
+    st.caption("※ 이 표는 시스템 로그 컴포넌트이며, 원본 마스터 엑셀 내용과는 별개의 상세 내역 히스토리입니다.")
+    if os.path.exists(STOCK_LOG_FILE):
+        df_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+        st.dataframe(df_logs.sort_index(ascending=False), use_container_width=True, hide_index=True)
+    else:
+        st.info("기록된 입출고 히스토리가 존재하지 않습니다.")
