@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 import os
 import io
-import shutil  # 파일 백업을 위한 라이브러리 추가
+import shutil  # 파일 백업을 위한 라이브러리
 
 # 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_간략시트연동.xlsx"
@@ -86,24 +86,30 @@ if not os.path.exists(CUSTOM_MASTER_FILE):
     base_master = load_excel_master()
     base_master.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
 
-# 실시간 품목 데이터베이스 로드
-master_data = pd.read_csv(CUSTOM_MASTER_FILE, encoding='utf-8-sig')
-master_data['엑셀기본재고'] = master_data['엑셀기본재고'].fillna(0).astype(int)
-master_data['유통기한'] = master_data['유통기한'].fillna("").astype(str)
+# 실시간 품목 데이터베이스 로드 함수 (매번 최신 상태를 읽어오도록 유도)
+def get_latest_master_and_logs():
+    master = pd.read_csv(CUSTOM_MASTER_FILE, encoding='utf-8-sig')
+    master['엑셀기본재고'] = master['엑셀기본재고'].fillna(0).astype(int)
+    master['유통기한'] = master['유통기한'].fillna("").astype(str)
+    
+    logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+    
+    # 최신 로그 기반 유통기한 업데이트 계산
+    if not logs.empty and "유통기한" in logs.columns:
+        expiry_logs = logs[logs["유통기한"].notna() & (logs["유통기한"].astype(str) != "") & (logs["유통기한"].astype(str) != "nan")]
+        if not expiry_logs.empty:
+            latest_expiries = expiry_logs.sort_values(by="날짜").groupby("품목명").last()["유통기한"].to_dict()
+            master["유통기한"] = master["품목명"].map(latest_expiries).fillna(master["유통기한"])
+            
+    return master, logs
+
+master_data, log_df = get_latest_master_and_logs()
 
 # 세션 상태(State) 안전 초기화
 if "success_msg" not in st.session_state: st.session_state.success_msg = ""
 if "warning_msg" not in st.session_state: st.session_state.warning_msg = ""
 if "in_qty" not in st.session_state: st.session_state.in_qty = 0
 if "out_qty" not in st.session_state: st.session_state.out_qty = 0
-
-# 사용자가 변경한 최신 유통기한 실시간 매핑
-log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-if not log_df.empty and "유통기한" in log_df.columns:
-    expiry_logs = log_df[log_df["유통기한"].notna() & (log_df["유통기한"].astype(str) != "") & (log_df["유통기한"].astype(str) != "nan")]
-    if not expiry_logs.empty:
-        latest_expiries = expiry_logs.sort_values(by="날짜").groupby("품목명").last()["유통기한"].to_dict()
-        master_data["유통기한"] = master_data["품목명"].map(latest_expiries).fillna(master_data["유통기한"])
 
 # 유통기한 임박 계산
 today = datetime.date.today()
@@ -229,7 +235,9 @@ def show_today_logs_and_management():
                     current_logs.loc[selected_idx, '수량'] = new_qty
                     updated_logs = current_logs
                     st.session_state.success_msg = f"🔧 수량이 {new_qty}개로 정상 수정되었습니다."
-                current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+                
+                updated_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+                st.cache_data.clear() # 캐시 강제 청소 추가
                 st.rerun()
     else:
         st.caption("오늘 아직 입력된 내역이 없습니다.")
@@ -310,6 +318,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
     with col_t2:
         bulk_cat = st.radio("분류 필터링", ["전체"] + list(master_data['대분류'].unique()), horizontal=True, key="bulk_cat")
         
+    # 언제나 신선한 로그 파일을 즉시 불러옴
     current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
     
     if not current_logs.empty:
@@ -396,7 +405,8 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
             if master_update_needed:
                 master_data.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
                 
-            st.session_state.success_msg = f"🚀 일괄 등록 성공: 총 {len(batch_new_logs)}건의 재고 변동 내역이 100% 안전하게 누적 저장되었습니다!"
+            st.session_state.success_msg = f"🚀 일괄 등록 성공: 총 {len(batch_new_logs)}건의 재고 변동 내역이 저장되었습니다."
+            st.cache_data.clear()
             st.rerun()
         else:
             st.warning("⚠️ 표에 숫자가 기입된 내역이 없습니다. 입고량이나 소모량을 적은 후 저장 버튼을 눌러주세요.")
@@ -407,10 +417,11 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
 elif menu == "📋 실시간 현재고 현황판":
     st.subheader("📋 매장 실시간 현재고 현황판")
     
-    current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+    # 현황판 오픈 시 무조건 가장 신선한 최신 파일 상태를 읽어 가도록 강제 재로드
+    fresh_master, fresh_logs = get_latest_master_and_logs()
     
-    if not current_logs.empty:
-        pivot_all = current_logs.pivot_table(
+    if not fresh_logs.empty:
+        pivot_all = fresh_logs.pivot_table(
             index=['대분류', '품목명'], 
             columns='구분', 
             values='수량', 
@@ -421,7 +432,7 @@ elif menu == "📋 실시간 현재고 현황판":
     else:
         pivot_all = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
         
-    dashboard_df = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], pivot_all, on=['대분류', '품목명'], how='left').fillna(0)
+    dashboard_df = pd.merge(fresh_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], pivot_all, on=['대분류', '품목명'], how='left').fillna(0)
     
     dashboard_df['금월 입고'] = dashboard_df['금월 입고'].astype(int)
     dashboard_df['월 소모(출고)'] = dashboard_df['월 소모(출고)'].astype(int)
@@ -432,7 +443,7 @@ elif menu == "📋 실시간 현재고 현황판":
     dashboard_df = dashboard_df.rename(columns={"엑셀기본재고": "기본재고(이월)", "금월 입고": "누적 입고량", "월 소모(출고)": "누적 소모량"})
     
     col_f1, col_f2 = st.columns([1, 2])
-    with col_f1: filter_cat = st.radio("분류별 필터", ["전체"] + list(master_data['대분류'].unique()), horizontal=True)
+    with col_f1: filter_cat = st.radio("분류별 필터", ["전체"] + list(fresh_master['대분류'].unique()), horizontal=True)
     with col_f2: search_query = st.text_input("🔍 품목 실시간 키워드 검색", "")
         
     display_dash = dashboard_df.copy()
@@ -457,22 +468,22 @@ elif menu == "📋 실시간 현재고 현황판":
 # 5) 월별 조회 및 백업 화면
 elif menu == "📊 월별 수불 대장 및 백업 다운로드":
     st.subheader("월별 수불 대장 및 데이터 다운로드")
-    log_df = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+    fresh_master, fresh_logs = get_latest_master_and_logs()
     
-    if log_df.empty:
+    if fresh_logs.empty:
         st.info("아직 누적된 데이터가 없습니다.")
     else:
-        log_df['날짜'] = pd.to_datetime(log_df['날짜'])
-        log_df['년월'] = log_df['날짜'].dt.to_period('M').astype(str)
+        fresh_logs['날짜'] = pd.to_datetime(fresh_logs['날짜'])
+        fresh_logs['년월'] = fresh_logs['날짜'].dt.to_period('M').astype(str)
         
         col1, col2 = st.columns(2)
         with col1:
-            available_months = sorted(log_df['년월'].unique(), reverse=True)
+            available_months = sorted(fresh_logs['년월'].unique(), reverse=True)
             selected_month = st.selectbox("조회할 월 선택", available_months)
         with col2:
-            selected_cat = st.selectbox("분류 필터", ["전체"] + list(master_data['대분류'].unique()))
+            selected_cat = st.selectbox("분류 필터", ["전체"] + list(fresh_master['대분류'].unique()))
             
-        filtered_df = log_df[log_df['년월'] == selected_month]
+        filtered_df = fresh_logs[fresh_logs['년월'] == selected_month]
         if selected_cat != "전체":
             filtered_df = filtered_df[filtered_df['대분류'] == selected_cat]
             
@@ -493,7 +504,7 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
             summary['월 소모(출고)'] = summary['월 소모(출고)'].astype(int)
             
             summary = summary.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
-            summary = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], summary, on=['대분류', '품목명'], how='inner')
+            summary = pd.merge(fresh_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], summary, on=['대분류', '품목명'], how='inner')
             summary['실시간 예상 현재고'] = summary['엑셀기본재고'] + summary['총 입고량'] - summary['총 소모량']
             
             st.markdown(f"### 📅 {selected_month} 품목별 종합 수불 집계")
@@ -529,10 +540,9 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-# 6) 품목 추가 / 삭제 관리 화면 + 데이터 초기화 섹션 추가
+# 6) 품목 추가 / 삭제 관리 화면 + 데이터 초기화 섹션
 elif menu == "⚙️ 품목 추가/삭제 관리":
     st.subheader("⚙️ 매장 품목 추가 및 삭제 관리")
-    st.write("엑셀 파일을 직접 수정하지 않고, 재고관리 시스템 상에서 물품을 자유롭게 추가하거나 삭제할 수 있습니다.")
     
     col_a, col_b = st.columns(2)
     
@@ -560,7 +570,8 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                     }])
                     master_data = pd.concat([master_data, new_row], ignore_index=True)
                     master_data.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
-                    st.success(f"✅ 신규 품목 등록 성공: [{add_cat}] {add_name}")
+                    st.session_state.success_msg = f"✅ 신규 품목 등록 성공: [{add_cat}] {add_name}"
+                    st.cache_data.clear()
                     st.rerun()
 
     with col_b:
@@ -580,19 +591,16 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
             if submit_delete:
                 master_data = master_data[master_data['품목명'] != target_delete_item]
                 master_data.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
-                st.success(f"❌ 품목 삭제 완료: {target_delete_item}")
+                st.session_state.success_msg = f"❌ 품목 삭제 완료: {target_delete_item}"
+                st.cache_data.clear()
                 st.rerun()
                 
-    # ----------------------------------------------------
-    # ★ [신규 신설된 로직] 당일 / 당월 데이터 변동 초기화 구역
-    # ----------------------------------------------------
     st.markdown("---")
     st.subheader("🚨 데이터 초기화 및 안전 백업")
-    st.error("⚠️ **주의**: 초기화 작업을 진행하면 해당 기간 동안 개별/일괄 등록했던 모든 입출고 내역이 영구적으로 제거됩니다.")
+    st.error("⚠️ **주의**: 초기화 작업을 진행하면 해당 기간 동안 등록했던 모든 입출고 내역이 영구 제거됩니다.")
     
     col_reset1, col_reset2 = st.columns(2)
     
-    # 2중 확인을 위한 세션 동적 키 생성용 체크박스 배치
     with col_reset1:
         st.markdown("#### 📅 당일 데이터 초기화")
         st.write(f"**오늘 날짜 ({datetime.date.today().strftime('%Y-%m-%d')})**로 기록된 모든 입고/출고 로그를 지웁니다.")
@@ -600,19 +608,18 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
         
         if st.button("🗑️ 당일 데이터 초기화 실행", type="primary", disabled=not confirm_day):
             if os.path.exists(STOCK_LOG_FILE):
-                # 1. 무조건 선 백업 파일 생성
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_filename = f"vini_backup_{timestamp}.csv"
                 shutil.copyfile(STOCK_LOG_FILE, backup_filename)
                 
-                # 2. 당일 데이터 제외 필터링 후 저장
                 logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
                 today_str = datetime.date.today().strftime("%Y-%m-%d")
                 
                 filtered_logs = logs[logs["날짜"] != today_str]
                 filtered_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
                 
-                st.session_state.success_msg = f"✅ 당일 로그 초기화 완료! (안전 백업파일 저장됨: `{backup_filename}`)"
+                st.session_state.success_msg = f"✅ 당일 로그 초기화 완료! (백업 완료: `{backup_filename}`)"
+                st.cache_data.clear()
                 st.rerun()
 
     with col_reset2:
@@ -623,21 +630,19 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
         
         if st.button("💥 당월 데이터 전체 초기화 실행", type="primary", disabled=not confirm_month):
             if os.path.exists(STOCK_LOG_FILE):
-                # 1. 무조건 선 백업 파일 생성
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 backup_filename = f"vini_backup_{timestamp}.csv"
                 shutil.copyfile(STOCK_LOG_FILE, backup_filename)
                 
-                # 2. 당월 데이터 제외 필터링 후 저장
                 logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
                 logs['날짜_dt'] = pd.to_datetime(logs['날짜'])
                 
-                # 이번달이 아닌 데이터만 남김
                 filtered_logs = logs[logs['날짜_dt'].dt.strftime("%Y-%m") != current_month_str]
                 filtered_logs = filtered_logs.drop(columns=['날짜_dt'])
                 filtered_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
                 
-                st.session_state.success_msg = f"✅ 당월 로그 전체 초기화 완료! (안전 백업파일 저장됨: `{backup_filename}`)"
+                st.session_state.success_msg = f"✅ 당월 로그 전체 초기화 완료! (백업 완료: `{backup_filename}`)"
+                st.cache_data.clear()
                 st.rerun()
                 
     st.markdown("---")
