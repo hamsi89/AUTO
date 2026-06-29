@@ -4,7 +4,7 @@ import datetime
 import os
 import io
 import shutil
-import openpyxl  # 엑셀 시트 정밀 제어를 위해 오픈피엑셀 사용
+import openpyxl  
 
 # 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
@@ -135,10 +135,10 @@ for idx, row in master_data.iterrows():
             pass
 
 
-# --- 🎯 [핵심 변경] 선택한 '날짜 셀'을 매칭하여 엑셀 수량을 직접 누적/차감하는 함수 ---
+# --- 🎯 [오차 조율 보완] 입고와 출고를 독립적으로 각각 누적하도록 수정 ---
 def update_excel_date_cell(cat, item_name, qty, target_date, new_expiry=None, action="inbound"):
     if not os.path.exists(ORIGINAL_EXCEL_PATH):
-        st.error(f"서버에 원본 엑셀 파일이 없습니다: {ORIGINAL_EXCEL_PATH}")
+        st.error(f"서버에 원본 엑셀 파일을 찾을 수 없습니다: {ORIGINAL_EXCEL_PATH}")
         return False
     try:
         wb = openpyxl.load_workbook(ORIGINAL_EXCEL_PATH)
@@ -146,46 +146,43 @@ def update_excel_date_cell(cat, item_name, qty, target_date, new_expiry=None, ac
         if target_sheet not in wb.sheetnames:
             return False
         ws = wb[target_sheet]
-        header_row = 3 # 상단 제목행 고려 3번째 줄을 헤더로 파싱
+        header_row = 3 
         
-        # 1. 엑셀 헤더에서 품목명, 유통기한, 그리고 선택한 '일자(예: 15일)' 열 위치 찾기
         name_col_idx, expiry_col_idx, date_col_idx = None, None, None
-        target_day_label = f"{target_date.day}일" # 사용자가 선택한 일자 문자열 (예: "1일", "30일")
+        target_day_num = str(target_date.day)          
+        target_day_label = f"{target_date.day}일"       
         
         for col in range(1, ws.max_column + 1):
-            val = str(ws.cell(row=header_row, column=col).value).strip().replace(" ", "")
-            if '품목명' in val or '품목이름' in val or '구분' in val: 
-                name_col_idx = col
-            elif '유통' in val: 
-                expiry_col_idx = col
-            elif val == target_day_label or val == str(target_date.day): # "1일" 혹은 일반 숫자 "1" 매칭
-                date_col_idx = col
+            cell_raw = ws.cell(row=header_row, column=col).value
+            if cell_raw is None: continue
+            val = str(cell_raw).strip().replace(" ", "")
+            
+            if '품목명' in val or '품목이름' in val or '구분' in val: name_col_idx = col
+            elif '유통' in val: expiry_col_idx = col
+            elif val == target_day_label or val == target_day_num or val == f"0{target_day_num}": date_col_idx = col
 
         if not name_col_idx:
-            st.error("엑셀 헤더 구조에서 '품목명' 컬럼을 찾을 수 없습니다.")
+            st.error("엑셀 헤더 구조에서 '품목명' 컬럼을 식별하지 못했습니다.")
             return False
         if not date_col_idx:
-            st.error(f"엑셀 헤더에서 선택하신 날짜 열('{target_day_label}')을 찾을 수 없습니다.")
+            st.error(f"❌ 엑셀 헤더에서 날짜 열 [{target_day_label}] 칸을 찾지 못했습니다.")
             return False
 
-        # 2. 해당 품목 행을 찾아서 매칭된 날짜 칸에 수량 업데이트
         item_found = False
         for row in range(header_row + 1, ws.max_row + 1):
             cell_item_name = str(ws.cell(row=row, column=name_col_idx).value).strip()
             if cell_item_name == item_name:
                 target_cell = ws.cell(row=row, column=date_col_idx)
                 
-                # 기존 해당 날짜 셀에 있던 수량 파싱
                 try: current_val = int(target_cell.value) if target_cell.value is not None else 0
                 except: current_val = 0
 
-                # 입고면 더하고, 출고(소모)면 빼서 대입
+                # 입고와 출고를 분리 계산 (입고는 더하고, 출고는 매장 규칙에 맞게 차감 누적)
                 if action == "inbound": 
                     target_cell.value = current_val + qty
                 elif action == "outbound": 
-                    target_cell.value = max(0, current_val - qty) # 음수 방지
+                    target_cell.value = max(0, current_val - qty) # 장부 깨짐 방지 음수 락
 
-                # 유통기한 셀 업데이트
                 if new_expiry and expiry_col_idx:
                     ws.cell(row=row, column=expiry_col_idx).value = new_expiry
                 
@@ -200,7 +197,7 @@ def update_excel_date_cell(cat, item_name, qty, target_date, new_expiry=None, ac
         wb.close()
         return True
     except Exception as e:
-        st.error(f"서버 엑셀 실시간 날짜 셀 반영 실패: {e}")
+        st.error(f"서버 엑셀 날짜 셀 반영 실패: {e}")
         return False
 
 
@@ -213,7 +210,6 @@ def save_inbound_callback():
         in_date_val = st.session_state.in_date
         expiry_str = st.session_state.in_utg.strftime("%Y-%m-%d")
         
-        # [변경] 선택한 특정 날짜 셀 추적하여 수량 주입
         excel_success = update_excel_date_cell(cat, item, qty, in_date_val, new_expiry=expiry_str, action="inbound")
         
         if excel_success:
@@ -228,7 +224,7 @@ def save_inbound_callback():
             }])
             current_logs = pd.concat([current_logs, new_data], ignore_index=True)
             current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-            st.session_state.success_msg = f"📥 [엑셀 날짜 동기화 완료] 입고: {item} | {qty}개 ➡️ 엑셀 헤더 [{in_date_val.day}일] 칸에 기록됨"
+            st.session_state.success_msg = f"📥 [입고 수량 반영 완수] 품목: {item} | 수량: {qty}개 ➡️ 엑셀 [{in_date_val.day}일] 칸에 누적 가산되었습니다."
             st.session_state.in_qty = 0  
             st.cache_data.clear()
     else:
@@ -241,7 +237,6 @@ def save_outbound_callback():
         item = st.session_state.out_item
         out_date_val = st.session_state.out_date
         
-        # [변경] 선택한 특정 날짜 셀 추적하여 수량 감산
         excel_success = update_excel_date_cell(cat, item, qty, out_date_val, action="outbound")
         
         if excel_success:
@@ -256,7 +251,7 @@ def save_outbound_callback():
             }])
             current_logs = pd.concat([current_logs, new_data], ignore_index=True)
             current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-            st.session_state.success_msg = f"📤 [엑셀 날짜 동기화 완료] 출고: {item} | {qty}개 소모 ➡️ 엑셀 헤더 [{out_date_val.day}일] 칸에서 차감됨"
+            st.session_state.success_msg = f"📤 [출고 수량 반영 완수] 품목: {item} | 소모: {qty}개 ➡️ 엑셀 [{out_date_val.day}일] 칸에서 안전하게 차감 누적되었습니다."
             st.session_state.out_qty = 0  
             st.cache_data.clear()
     else:
@@ -377,7 +372,7 @@ if menu == "📥 물품 입고 등록 (개별)":
                     
         show_today_logs_and_management()
 
-# 2) 出고 등록 메뉴(개별)
+# 2) 출고 등록 메뉴(개별)
 elif menu == "📤 물품 출고 등록 (소모-개별)":
     st.subheader("📤 매장 소모(출고) 등록 (개별)")
     st.info("💡 출고(소모) 수량을 입력한 뒤 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
@@ -405,7 +400,7 @@ elif menu == "📤 물품 출고 등록 (소모-개별)":
                     
         show_today_logs_and_management()
 
-# 3) 전품목 일괄 입력 (엑셀 스타일) + 저장 후 선택한 날짜 칸에 다이렉트 주입
+# 3) 전품목 일괄 입력 (엑셀 스타일)
 elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
     st.subheader("📝 전품목 일괄 입력 (엑셀 스타일)")
     
@@ -482,11 +477,11 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         master_update_needed = False
         excel_bulk_updated = False
         
-        # [기능 변경] 일괄 입력 시에도 선택한 일자("30일" 등) 컬럼을 추적하여 엑셀 매핑 수정
         if os.path.exists(ORIGINAL_EXCEL_PATH):
             try:
                 wb = openpyxl.load_workbook(ORIGINAL_EXCEL_PATH)
                 target_day_text = f"{bulk_date.day}일"
+                target_day_num = str(bulk_date.day)
                 
                 for idx, row in edited_bulk.iterrows():
                     p_name = row['품목명']
@@ -502,9 +497,12 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                         
                         name_idx, target_date_col_idx, expiry_idx = None, None, None
                         for c in range(1, ws.max_column + 1):
-                            val = str(ws.cell(row=header_row, column=c).value).strip().replace(" ", "")
+                            cell_v = ws.cell(row=header_row, column=c).value
+                            if cell_v is None: continue
+                            val = str(cell_v).strip().replace(" ", "")
+                            
                             if '품목명' in val or '품목이름' in val or '구분' in val: name_idx = c
-                            elif val == target_day_text or val == str(bulk_date.day): target_date_col_idx = c
+                            elif val == target_day_text or val == target_day_num or val == f"0{target_day_num}": target_date_col_idx = c
                             elif '유통' in val: expiry_idx = c
 
                         if name_idx and target_date_col_idx:
@@ -515,7 +513,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                                     try: exist_num = int(cell.value) if cell.value is not None else 0
                                     except: exist_num = 0
                                     
-                                    # 입고와 소모 수량을 합산 연산하여 해당 일자 칸에 주입
+                                    # [기능 보완] 퉁치지 않고 입고(+)와 출고(-)를 독립 연산하여 누적
                                     net_change = in_val - out_val
                                     cell.value = max(0, exist_num + net_change)
                                     
