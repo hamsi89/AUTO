@@ -166,7 +166,7 @@ def update_excel_vini_rule(cat, item_name, qty, target_date, new_expiry=None, ac
                 expiry_col_idx = col
             
             # [규칙 적용] 입고는 '금월입고' 열 추적 / 출고는 '해당 일(예: 30일)' 열 추적
-            if action == "inbound" and ('금월입고' in val or '입고' in val):
+            if action == "inbound" and ('금월 입고' in val or '입고' in val):
                 target_col_idx = col
             elif action == "outbound" and (val == target_day_label or val == target_day_num or val == f"0{target_day_num}"):
                 target_col_idx = col
