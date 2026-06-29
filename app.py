@@ -5,7 +5,7 @@ import os
 import io
 import shutil
 
-# ★ 파일 이름 새 버전으로 교체
+# 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
 CUSTOM_MASTER_FILE = "vini_custom_master.csv"  
 STOCK_LOG_FILE = "vini_daily_stock_log.csv"
@@ -108,6 +108,10 @@ if "success_msg" not in st.session_state: st.session_state.success_msg = ""
 if "warning_msg" not in st.session_state: st.session_state.warning_msg = ""
 if "in_qty" not in st.session_state: st.session_state.in_qty = 0
 if "out_qty" not in st.session_state: st.session_state.out_qty = 0
+# ★ 일괄 저장 직후 다운로드 링크 유지를 위한 세션 변수 추가
+if "bulk_download_ready" not in st.session_state: st.session_state.bulk_download_ready = False
+if "bulk_excel_bytes" not in st.session_state: st.session_state.bulk_excel_bytes = None
+if "bulk_filename" not in st.session_state: st.session_state.bulk_filename = ""
 
 # 유통기한 임박 계산
 today = datetime.date.today()
@@ -182,6 +186,10 @@ menu = st.sidebar.radio(
         "⚙️ 품목 추가/삭제 관리"
     ]
 )
+
+# 메뉴 이동 시 일괄입고 전용 다운로드 버튼 상태 리셋
+if menu != "📝 전품목 일괄 입력 (엑셀 스타일)":
+    st.session_state.bulk_download_ready = False
 
 if st.session_state.success_msg:
     st.success(st.session_state.success_msg)
@@ -302,9 +310,22 @@ elif menu == "📤 물품 출고 등록 (소모-개별)":
                     
         show_today_logs_and_management()
 
-# 3) 전품목 일괄 입력 (엑셀 스타일)
+# 3) 전품목 일괄 입력 (엑셀 스타일) + 저장 후 즉시 다운로드 로직 탑재
 elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
     st.subheader("📝 전품목 일괄 입력 (엑셀 스타일)")
+    
+    # ★ 만약 방금 저장이 완료되어 다운로드 버퍼가 준비되었다면, 최상단에 다운로드 컴포넌트 즉각 생성!
+    if st.session_state.bulk_download_ready and st.session_state.bulk_excel_bytes:
+        st.success("🎉 일괄 변동 내역이 성공적으로 기록되었습니다! 아래 다운로드 단추를 눌러 엑셀 백업을 바로 챙겨가세요.")
+        st.download_button(
+            label="📥 방금 저장된 최신 수불 집계표 다운로드 (Excel)",
+            data=st.session_state.bulk_excel_bytes,
+            file_name=st.session_state.bulk_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True
+        )
+        st.markdown("---")
     
     col_t1, col_t2 = st.columns([1, 2])
     with col_t1:
@@ -351,7 +372,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         key="bulk_data_editor"
     )
     
-    if st.button("💾 위 입력된 모든 내역 일괄 저장하기", use_container_width=True):
+    if st.button("💾 위 입력된 모든 내역 일괄 저장하고 엑셀 추출하기", use_container_width=True):
         batch_new_logs = []
         master_update_needed = False
         
@@ -398,9 +419,43 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
             if master_update_needed:
                 master_data.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
                 
-            st.session_state.success_msg = f"🚀 일괄 등록 성공: 변동 내역이 누적 저장되었습니다."
+            # ----------------------------------------------------
+            # ★ 일괄 저장 직후 즉시 엑셀 바이너리를 생성하여 세션에 가둠
+            # ----------------------------------------------------
+            fresh_master, fresh_logs = get_latest_master_and_logs()
+            current_month_str = bulk_date.strftime("%Y-%m")
+            
+            if not fresh_logs.empty:
+                fresh_logs['날짜_dt'] = pd.to_datetime(fresh_logs['날짜'])
+                filtered_df = fresh_logs[fresh_logs['날짜_dt'].dt.strftime("%Y-%m") == current_month_str]
+                
+                if not filtered_df.empty:
+                    summary = filtered_df.pivot_table(
+                        index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum'
+                    ).fillna(0).reset_index()
+                    
+                    if "금월 입고" not in summary.columns: summary["금월 입고"] = 0
+                    if "월 소모(출고)" not in summary.columns: summary["월 소모(출고)"] = 0
+                    
+                    summary['금월 입고'] = summary['금월 입고'].astype(int)
+                    summary['월 소모(출고)'] = summary['월 소모(출고)'].astype(int)
+                    summary = summary.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
+                    summary = pd.merge(fresh_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], summary, on=['대분류', '품목명'], how='inner')
+                    summary['실시간 예상 현재고'] = summary['엑셀기본재고'] + summary['총 입고량'] - summary['총 소모량']
+                    
+                    # 메모리 가상 버퍼에 Excel 작성
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        summary.to_excel(writer, index=False, sheet_name=f'{current_month_str}_일괄갱신집계')
+                    
+                    st.session_state.bulk_excel_bytes = buffer.getvalue()
+                    st.session_state.bulk_filename = f"vini_bulk_updated_{bulk_date.strftime('%Y%m%d')}.xlsx"
+                    st.session_state.bulk_download_ready = True
+            
             st.cache_data.clear()
             st.rerun()
+        else:
+            st.warning("⚠️ 표에 숫자가 기입된 내역이 없습니다. 숫자를 적은 후 저장 버튼을 눌러주세요.")
 
     show_today_logs_and_management()
 
@@ -489,8 +544,38 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
             
             st.markdown(f"### 📅 {selected_month} 품목별 종합 수불 집계")
             st.dataframe(summary, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            st.subheader("💾 데이터 안전 백업 및 내보내기 (Excel)")
+            
+            buffer_summary = io.BytesIO()
+            with pd.ExcelWriter(buffer_summary, engine='openpyxl') as writer:
+                summary.to_excel(writer, index=False, sheet_name=f'{selected_month}_수불집계')
+            excel_summary_bytes = buffer_summary.getvalue()
+            
+            full_raw_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+            buffer_raw = io.BytesIO()
+            with pd.ExcelWriter(buffer_raw, engine='openpyxl') as writer:
+                full_raw_logs.to_excel(writer, index=False, sheet_name='전체누적로그')
+            excel_raw_bytes = buffer_raw.getvalue()
+            
+            col_b1, col_b2 = st.columns(2)
+            with col_b1:
+                st.download_button(
+                    label=f"📊 {selected_month} 월간 집계표 다운로드 (Excel)",
+                    data=excel_summary_bytes,
+                    file_name=f"vini_coffee_summary_{selected_month}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col_b2:
+                st.download_button(
+                    label="📝 전체 일별 로그 백업 다운로드 (Excel)",
+                    data=excel_raw_bytes,
+                    file_name="vini_daily_stock_log_backup.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-# 6) 품목 추가 / 삭제 관리 화면 + 공장 초기화 완비
+# 6) 품목 추가 / 삭제 관리 화면
 elif menu == "⚙️ 품목 추가/삭제 관리":
     st.subheader("⚙️ 매장 품목 추가 및 삭제 관리")
     
@@ -573,19 +658,14 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                 st.cache_data.clear()
                 st.rerun()
                 
-    # ★ [보강 완료] 서버 강제 파일 제거 및 공장 초기화 단추
     st.markdown("---")
     st.markdown("### 🔥 새 엑셀파일 동기화 및 전체 공장 초기화")
-    st.warning("과거에 생성되었던 데이터 백업 캐시를 완전히 강제 삭제하고, 방금 업로드한 **새로운 'v3_주간체크리스트추가' 엑셀 기준**으로 시스템을 빈 도화지 상태에서 깨끗하게 다시 시작합니다.")
+    st.warning("과거에 생성되었던 데이터 백업 캐시를 완전히 강제 삭제하고, 새로운 엑셀 기준으로 정렬합니다.")
     
     confirm_destroy = st.checkbox("⚠️ 과거 기록된 로컬 데이터베이스를 전부 삭제하고 새 엑셀 기준으로 정렬하는 것에 동의합니다.", key="confirm_destroy")
     if st.button("🚀 서버 강제 공장 초기화 실행", type="primary", disabled=not confirm_destroy):
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        if os.path.exists(STOCK_LOG_FILE):
-            os.remove(STOCK_LOG_FILE)  
-        if os.path.exists(CUSTOM_MASTER_FILE):
-            os.remove(CUSTOM_MASTER_FILE)  
-            
+        if os.path.exists(STOCK_LOG_FILE): os.remove(STOCK_LOG_FILE)  
+        if os.path.exists(CUSTOM_MASTER_FILE): os.remove(CUSTOM_MASTER_FILE)  
         st.cache_data.clear()
         st.session_state.success_msg = f"💥 공장 초기화 완수! 새로운 엑셀 파일 `{ORIGINAL_EXCEL_PATH}` 데이터로 완벽하게 복구되었습니다."
         st.rerun()
