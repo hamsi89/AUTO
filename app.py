@@ -4,7 +4,7 @@ import datetime
 import os
 import io
 import shutil
-import openpyxl  # 엑셀 파일 직접 수정을 위해 추가
+import openpyxl  # 엑셀 시트 정밀 제어를 위해 오픈피엑셀 사용
 
 # 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
@@ -85,7 +85,6 @@ def load_excel_master():
         {"품목명": "서울우유", "대분류": "원재료", "유통기한": "2026-06-25", "엑셀기본재고": 42}
     ])
 
-# 데이터 파일들 초기화 함수
 def get_latest_master_and_logs():
     if not os.path.exists(CUSTOM_MASTER_FILE):
         base_master = load_excel_master()
@@ -119,7 +118,6 @@ if "out_qty" not in st.session_state: st.session_state.out_qty = 0
 if "bulk_download_ready" not in st.session_state: st.session_state.bulk_download_ready = False
 if "bulk_excel_bytes" not in st.session_state: st.session_state.bulk_excel_bytes = None
 if "bulk_filename" not in st.session_state: st.session_state.bulk_filename = ""
-# ★ 원본 엑셀 파일 다운로드 링크 유지를 위한 세션 변수 추가
 if "orig_excel_bytes" not in st.session_state: st.session_state.orig_excel_bytes = None
 
 # 유통기한 임박 계산
@@ -137,8 +135,8 @@ for idx, row in master_data.iterrows():
             pass
 
 
-# --- [기능 추가] 개별 입출고 발생 시 서버 원본 엑셀 동기화 함수 ---
-def update_original_excel_file(cat, item_name, qty, new_expiry=None, action="inbound"):
+# --- 🎯 [핵심 변경] 선택한 '날짜 셀'을 매칭하여 엑셀 수량을 직접 누적/차감하는 함수 ---
+def update_excel_date_cell(cat, item_name, qty, target_date, new_expiry=None, action="inbound"):
     if not os.path.exists(ORIGINAL_EXCEL_PATH):
         st.error(f"서버에 원본 엑셀 파일이 없습니다: {ORIGINAL_EXCEL_PATH}")
         return False
@@ -148,36 +146,61 @@ def update_original_excel_file(cat, item_name, qty, new_expiry=None, action="inb
         if target_sheet not in wb.sheetnames:
             return False
         ws = wb[target_sheet]
-        header_row = 3
+        header_row = 3 # 상단 제목행 고려 3번째 줄을 헤더로 파싱
         
-        name_col_idx, stock_col_idx, expiry_col_idx = None, None, None
+        # 1. 엑셀 헤더에서 품목명, 유통기한, 그리고 선택한 '일자(예: 15일)' 열 위치 찾기
+        name_col_idx, expiry_col_idx, date_col_idx = None, None, None
+        target_day_label = f"{target_date.day}일" # 사용자가 선택한 일자 문자열 (예: "1일", "30일")
+        
         for col in range(1, ws.max_column + 1):
             val = str(ws.cell(row=header_row, column=col).value).strip().replace(" ", "")
-            if '품목명' in val or '품목이름' in val or '구분' in val: name_col_idx = col
-            elif '재고' in val: stock_col_idx = col
-            elif '유통' in val: expiry_col_idx = col
+            if '품목명' in val or '품목이름' in val or '구분' in val: 
+                name_col_idx = col
+            elif '유통' in val: 
+                expiry_col_idx = col
+            elif val == target_day_label or val == str(target_date.day): # "1일" 혹은 일반 숫자 "1" 매칭
+                date_col_idx = col
 
-        if not name_col_idx or not stock_col_idx:
+        if not name_col_idx:
+            st.error("엑셀 헤더 구조에서 '품목명' 컬럼을 찾을 수 없습니다.")
+            return False
+        if not date_col_idx:
+            st.error(f"엑셀 헤더에서 선택하신 날짜 열('{target_day_label}')을 찾을 수 없습니다.")
             return False
 
+        # 2. 해당 품목 행을 찾아서 매칭된 날짜 칸에 수량 업데이트
+        item_found = False
         for row in range(header_row + 1, ws.max_row + 1):
             cell_item_name = str(ws.cell(row=row, column=name_col_idx).value).strip()
             if cell_item_name == item_name:
-                current_stock_cell = ws.cell(row=row, column=stock_col_idx)
-                try: current_stock = int(current_stock_cell.value) if current_stock_cell.value is not None else 0
-                except: current_stock = 0
+                target_cell = ws.cell(row=row, column=date_col_idx)
+                
+                # 기존 해당 날짜 셀에 있던 수량 파싱
+                try: current_val = int(target_cell.value) if target_cell.value is not None else 0
+                except: current_val = 0
 
-                if action == "inbound": current_stock_cell.value = current_stock + qty
-                elif action == "outbound": current_stock_cell.value = max(0, current_stock - qty)
+                # 입고면 더하고, 출고(소모)면 빼서 대입
+                if action == "inbound": 
+                    target_cell.value = current_val + qty
+                elif action == "outbound": 
+                    target_cell.value = max(0, current_val - qty) # 음수 방지
 
+                # 유통기한 셀 업데이트
                 if new_expiry and expiry_col_idx:
                     ws.cell(row=row, column=expiry_col_idx).value = new_expiry
+                
+                item_found = True
                 break
+                
+        if not item_found:
+            st.error(f"엑셀 파일에서 [{item_name}] 품목을 찾을 수 없습니다.")
+            return False
+
         wb.save(ORIGINAL_EXCEL_PATH)
         wb.close()
         return True
     except Exception as e:
-        st.error(f"서버 엑셀 실시간 반영 실패: {e}")
+        st.error(f"서버 엑셀 실시간 날짜 셀 반영 실패: {e}")
         return False
 
 
@@ -187,25 +210,27 @@ def save_inbound_callback():
     if qty > 0:
         cat = st.session_state.in_cat
         item = st.session_state.in_item
+        in_date_val = st.session_state.in_date
         expiry_str = st.session_state.in_utg.strftime("%Y-%m-%d")
         
-        # [기능 추가] 서버 원본 엑셀 실시간 동기화
-        update_original_excel_file(cat, item, qty, new_expiry=expiry_str, action="inbound")
+        # [변경] 선택한 특정 날짜 셀 추적하여 수량 주입
+        excel_success = update_excel_date_cell(cat, item, qty, in_date_val, new_expiry=expiry_str, action="inbound")
         
-        current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-        new_data = pd.DataFrame([{
-            "날짜": st.session_state.in_date.strftime("%Y-%m-%d"),
-            "대분류": cat,
-            "품목명": item,
-            "구분": "금월 입고",
-            "수량": qty,
-            "유통기한": expiry_str
-        }])
-        current_logs = pd.concat([current_logs, new_data], ignore_index=True)
-        current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-        st.session_state.success_msg = f"📥 입고 및 엑셀 동기화 완료: {item} | {qty}개 | 유통기한: {expiry_str}"
-        st.session_state.in_qty = 0  
-        st.cache_data.clear() # 캐시 초기화 추가
+        if excel_success:
+            current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+            new_data = pd.DataFrame([{
+                "날짜": in_date_val.strftime("%Y-%m-%d"),
+                "대분류": cat,
+                "품목명": item,
+                "구분": "금월 입고",
+                "수량": qty,
+                "유통기한": expiry_str
+            }])
+            current_logs = pd.concat([current_logs, new_data], ignore_index=True)
+            current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+            st.session_state.success_msg = f"📥 [엑셀 날짜 동기화 완료] 입고: {item} | {qty}개 ➡️ 엑셀 헤더 [{in_date_val.day}일] 칸에 기록됨"
+            st.session_state.in_qty = 0  
+            st.cache_data.clear()
     else:
         st.session_state.warning_msg = "⚠️ 입고 수량을 1개 이상 입력하셔야 합니다."
 
@@ -214,24 +239,26 @@ def save_outbound_callback():
     if qty > 0:
         cat = st.session_state.out_cat
         item = st.session_state.out_item
+        out_date_val = st.session_state.out_date
         
-        # [기능 추가] 서버 원본 엑셀 실시간 동기화
-        update_original_excel_file(cat, item, qty, action="outbound")
+        # [변경] 선택한 특정 날짜 셀 추적하여 수량 감산
+        excel_success = update_excel_date_cell(cat, item, qty, out_date_val, action="outbound")
         
-        current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-        new_data = pd.DataFrame([{
-            "날짜": st.session_state.out_date.strftime("%Y-%m-%d"),
-            "대분류": cat,
-            "품목명": item,
-            "구분": "월 소모(출고)",
-            "수량": qty,
-            "유통기한": ""
-        }])
-        current_logs = pd.concat([current_logs, new_data], ignore_index=True)
-        current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-        st.session_state.success_msg = f"📤 출고 및 엑셀 동기화 완료: {item} | {qty}개 소모"
-        st.session_state.out_qty = 0  
-        st.cache_data.clear() # 캐시 초기화 추가
+        if excel_success:
+            current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+            new_data = pd.DataFrame([{
+                "날짜": out_date_val.strftime("%Y-%m-%d"),
+                "대분류": cat,
+                "품목명": item,
+                "구분": "월 소모(출고)",
+                "수량": qty,
+                "유통기한": ""
+            }])
+            current_logs = pd.concat([current_logs, new_data], ignore_index=True)
+            current_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+            st.session_state.success_msg = f"📤 [엑셀 날짜 동기화 완료] 출고: {item} | {qty}개 소모 ➡️ 엑셀 헤더 [{out_date_val.day}일] 칸에서 차감됨"
+            st.session_state.out_qty = 0  
+            st.cache_data.clear()
     else:
         st.session_state.warning_msg = "⚠️ 출고 수량을 1개 이상 입력하셔야 합니다."
 
@@ -256,7 +283,6 @@ menu = st.sidebar.radio(
     ]
 )
 
-# 메뉴 이동 시 일괄입고 전용 다운로드 버튼 상태 리셋
 if menu != "📝 전품목 일괄 입력 (엑셀 스타일)":
     st.session_state.bulk_download_ready = False
 
@@ -351,7 +377,7 @@ if menu == "📥 물품 입고 등록 (개별)":
                     
         show_today_logs_and_management()
 
-# 2) 출고 등록 메뉴(개별)
+# 2) 出고 등록 메뉴(개별)
 elif menu == "📤 물품 출고 등록 (소모-개별)":
     st.subheader("📤 매장 소모(출고) 등록 (개별)")
     st.info("💡 출고(소모) 수량을 입력한 뒤 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
@@ -379,13 +405,12 @@ elif menu == "📤 물품 출고 등록 (소모-개별)":
                     
         show_today_logs_and_management()
 
-# 3) 전품목 일괄 입력 (엑셀 스타일) + 저장 후 즉시 다운로드 로직 탑재
+# 3) 전품목 일괄 입력 (엑셀 스타일) + 저장 후 선택한 날짜 칸에 다이렉트 주입
 elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
     st.subheader("📝 전품목 일괄 입력 (엑셀 스타일)")
     
-    # ★ 저장 직후 집계표와 최신 반영 엑셀 파일을 동시에 다운로드받을 수 있도록 레이아웃 배치
     if st.session_state.bulk_download_ready and st.session_state.bulk_excel_bytes:
-        st.success("🎉 일괄 변동 내역이 서버 원본 엑셀 및 시스템 로그에 반영되었습니다! 아래 단추들을 눌러 필요한 백업을 챙겨가세요.")
+        st.success("🎉 일괄 변동 내역이 서버 원본 엑셀 날짜 칸에 완벽히 저장되었습니다!")
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
             st.download_button(
@@ -399,9 +424,9 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         with col_dl2:
             if st.session_state.orig_excel_bytes:
                 st.download_button(
-                    label="📥 수량이 자동 연산된 최신 서버 원본 엑셀 전체 다운로드 (.xlsx)",
+                    label="📥 수정된 서버 원본 엑셀 전체 파일 가져오기 (.xlsx)",
                     data=st.session_state.orig_excel_bytes,
-                    file_name=f"🟢최신반영_통합_식자재대장_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                    file_name=f"🟢날짜별반영_원본_통합대장_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -455,12 +480,14 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
     if st.button("💾 위 입력된 모든 내역 일괄 저장하고 엑셀 추출하기", use_container_width=True):
         batch_new_logs = []
         master_update_needed = False
-        
-        # [기능 추가] 일괄 입력 건들을 오픈피엑셀 엔진으로 서버 원본 엑셀에 한꺼번에 마스킹 처리
         excel_bulk_updated = False
+        
+        # [기능 변경] 일괄 입력 시에도 선택한 일자("30일" 등) 컬럼을 추적하여 엑셀 매핑 수정
         if os.path.exists(ORIGINAL_EXCEL_PATH):
             try:
                 wb = openpyxl.load_workbook(ORIGINAL_EXCEL_PATH)
+                target_day_text = f"{bulk_date.day}일"
+                
                 for idx, row in edited_bulk.iterrows():
                     p_name = row['품목명']
                     p_cat = row['대분류']
@@ -473,26 +500,25 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                         ws = wb[target_sheet]
                         header_row = 3
                         
-                        name_idx, inbound_idx, outbound_idx, expiry_idx = None, None, None, None
+                        name_idx, target_date_col_idx, expiry_idx = None, None, None
                         for c in range(1, ws.max_column + 1):
                             val = str(ws.cell(row=header_row, column=c).value).strip().replace(" ", "")
                             if '품목명' in val or '품목이름' in val or '구분' in val: name_idx = c
-                            elif '입고' in val: inbound_idx = c
-                            elif '출고' in val or '소모' in val: outbound_idx = c
+                            elif val == target_day_text or val == str(bulk_date.day): target_date_col_idx = c
                             elif '유통' in val: expiry_idx = c
 
-                        if name_idx:
+                        if name_idx and target_date_col_idx:
                             for r in range(header_row + 1, ws.max_row + 1):
                                 excel_item_name = str(ws.cell(row=r, column=name_idx).value).strip()
                                 if excel_item_name == p_name:
-                                    if inbound_idx and in_val > 0:
-                                        try: current_in = int(ws.cell(row=r, column=inbound_idx).value or 0)
-                                        except: current_in = 0
-                                        ws.cell(row=r, column=inbound_idx).value = current_in + in_val
-                                    if outbound_idx and out_val > 0:
-                                        try: current_out = int(ws.cell(row=r, column=outbound_idx).value or 0)
-                                        except: current_out = 0
-                                        ws.cell(row=r, column=outbound_idx).value = current_out + out_val
+                                    cell = ws.cell(row=r, column=target_date_col_idx)
+                                    try: exist_num = int(cell.value) if cell.value is not None else 0
+                                    except: exist_num = 0
+                                    
+                                    # 입고와 소모 수량을 합산 연산하여 해당 일자 칸에 주입
+                                    net_change = in_val - out_val
+                                    cell.value = max(0, exist_num + net_change)
+                                    
                                     if expiry_idx and utg_val:
                                         ws.cell(row=r, column=expiry_idx).value = utg_val
                                     break
@@ -500,7 +526,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                 wb.close()
                 excel_bulk_updated = True
             except Exception as e:
-                st.error(f"서버 엑셀 일괄 주입 에러: {e}")
+                st.error(f"서버 엑셀 일괄 날짜 반영 실패: {e}")
 
         for idx, row in edited_bulk.iterrows():
             p_name = row['품목명']
@@ -517,24 +543,9 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                     master_update_needed = True
             
             if in_val > 0:
-                batch_new_logs.append({
-                    "날짜": bulk_date.strftime("%Y-%m-%d"),
-                    "대분류": p_cat,
-                    "품목명": p_name,
-                    "구분": "금월 입고",
-                    "수량": in_val,
-                    "유통기한": utg_val
-                })
-                
+                batch_new_logs.append({"날짜": bulk_date.strftime("%Y-%m-%d"), "대분류": p_cat, "품목명": p_name, "구분": "금월 입고", "수량": in_val, "유통기한": utg_val})
             if out_val > 0:
-                batch_new_logs.append({
-                    "날짜": bulk_date.strftime("%Y-%m-%d"),
-                    "대분류": p_cat,
-                    "품목명": p_name,
-                    "구분": "월 소모(출고)",
-                    "수량": out_val,
-                    "유통기한": ""
-                })
+                batch_new_logs.append({"날짜": bulk_date.strftime("%Y-%m-%d"), "대분류": p_cat, "품목명": p_name, "구분": "월 소모(출고)", "수량": out_val, "유통기한": ""})
                 
         if batch_new_logs or master_update_needed or excel_bulk_updated:
             if batch_new_logs:
@@ -553,10 +564,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                 filtered_df = fresh_logs[fresh_logs['날짜_dt'].dt.strftime("%Y-%m") == current_month_str]
                 
                 if not filtered_df.empty:
-                    summary = filtered_df.pivot_table(
-                        index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum'
-                    ).fillna(0).reset_index()
-                    
+                    summary = filtered_df.pivot_table(index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum').fillna(0).reset_index()
                     if "금월 입고" not in summary.columns: summary["금월 입고"] = 0
                     if "월 소모(출고)" not in summary.columns: summary["월 소모(출고)"] = 0
                     
@@ -574,7 +582,6 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                     st.session_state.bulk_filename = f"vini_bulk_updated_{bulk_date.strftime('%Y%m%d')}.xlsx"
                     st.session_state.bulk_download_ready = True
             
-            # [기능 추가] 변경 사항이 포함된 원본 엑셀 전체 파일을 다운로드 버퍼에 세팅
             if os.path.exists(ORIGINAL_EXCEL_PATH):
                 with open(ORIGINAL_EXCEL_PATH, "rb") as f:
                     st.session_state.orig_excel_bytes = f.read()
