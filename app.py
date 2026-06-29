@@ -815,3 +815,25 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                 
     st.markdown("---")
     st.dataframe(master_data.sort_values(by=["대분류", "품목명"]), use_container_width=True, hide_index=True)
+
+st.markdown("---")
+st.subheader("🛠️ [진단용] 프로그램이 실제 인식한 엑셀 3열 글자 목록")
+if os.path.exists(ORIGINAL_EXCEL_PATH):
+    try:
+        wb_test = openpyxl.load_workbook(ORIGINAL_EXCEL_PATH, data_only=True)
+        # 현재 선택된 대분류의 실제 시트명 가져오기
+        t_sheet = SHEET_MAP.get(st.session_state.get("bulk_cat", "원재료"), "원재료(간략)")
+        if t_sheet in wb_test.sheetnames:
+            ws_test = wb_test[t_sheet]
+            headers_3rd_row = []
+            for col in range(1, ws_test.max_column + 1):
+                headers_3rd_row.append(str(ws_test.cell(row=3, column=col).value))
+            
+            st.write(f"📂 **현재 확인 중인 시트명:** `{t_sheet}`")
+            st.write("📊 **3열(3번째 줄)에 적힌 실제 컬럼 이름들:**")
+            st.code(headers_3rd_row)
+        else:
+            st.error(f"엑셀에 `{t_sheet}` 시트가 없습니다. 시트 이름을 확인해주세요.")
+        wb_test.close()
+    except Exception as e:
+        st.error(f"진단 코드 로드 에러: {e}")
