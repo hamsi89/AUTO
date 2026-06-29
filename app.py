@@ -6,7 +6,7 @@ import io
 import shutil  # 파일 백업을 위한 라이브러리
 
 # 파일 이름 설정
-ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_간략시트연동.xlsx"
+ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
 CUSTOM_MASTER_FILE = "vini_custom_master.csv"  
 STOCK_LOG_FILE = "vini_daily_stock_log.csv"
 
