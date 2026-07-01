@@ -11,6 +11,11 @@ ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v
 CUSTOM_MASTER_FILE = "vini_custom_master.csv"  
 STOCK_LOG_FILE = "vini_daily_stock_log.csv"
 
+# 🍷 와인 전용 파일 및 로그 설정 추가
+WINE_EXCEL_PATH = "와인_입출고양식_디자인적용_현재고요약.xlsx"
+WINE_MASTER_FILE = "wine_custom_master.csv"
+WINE_LOG_FILE = "wine_daily_stock_log.csv"
+
 st.set_page_config(page_title="VINI COFFEE 재고관리 시스템", layout="wide")
 
 # 원본 엑셀의 진짜 시트 이름 지정
@@ -42,7 +47,6 @@ def load_excel_master():
                         break
                 
                 if target_sheet:
-                    # 💡 실제 데이터 대장은 3번째 행(skiprows=2)부터 시작합니다.
                     df = pd.read_excel(xl, sheet_name=target_sheet, skiprows=2)
                     df.columns = [str(c).strip().replace(" ", "") for c in df.columns]
                     
@@ -109,7 +113,69 @@ def get_latest_master_and_logs():
             
     return master, logs
 
+# 🍷 와인 전용 마스터 및 로그 로드 함수 추가
+@st.cache_data
+def load_wine_master():
+    """와인 엑셀 파일에서 마스터 품목 리스트를 추출하는 함수"""
+    if os.path.exists(WINE_EXCEL_PATH):
+        try:
+            xl = pd.ExcelFile(WINE_EXCEL_PATH)
+            # 첫 번째 시트 혹은 '와인' 단어가 포함된 시트 선택
+            target_sheet = xl.sheet_names[0]
+            for name in xl.sheet_names:
+                if "와인" in name or "재고" in name:
+                    target_sheet = name
+                    break
+            
+            # 기본적으로 헤더가 상단에 위치해 있으므로 필요시 skiprows 조절 (여기서는 기본값 2 적용)
+            df = pd.read_excel(xl, sheet_name=target_sheet, skiprows=2)
+            df.columns = [str(c).strip().replace(" ", "") for c in df.columns]
+            
+            name_col = None
+            for col in df.columns:
+                if '품목' in col or '와인명' in col or '이름' in col or '구분' in col:
+                    name_col = col
+                    break
+                    
+            if name_col:
+                df = df.dropna(subset=[name_col])
+                df = df[df[name_col].astype(str).str.strip() != '0']
+                
+                stock_col = [c for c in df.columns if '재고' in c or '이월' in c]
+                expiry_col = [c for c in df.columns if '유통' in c or '빈티지' in c]
+                
+                temp_df = pd.DataFrame()
+                temp_df['품목명'] = df[name_col].astype(str).str.strip()
+                temp_df['대분류'] = "와인"
+                temp_df['유통기한'] = df[expiry_col[0]].astype(str).str.strip() if expiry_col else ""
+                temp_df['엑셀기본재고'] = pd.to_numeric(df[stock_col[0]], errors='coerce').fillna(0).astype(int) if stock_col else 0
+                return temp_df
+        except Exception as e:
+            st.error(f"와인 엑셀 품목 로드 실패: {e}")
+            
+    return pd.DataFrame([
+        {"품목명": "레드와인_A", "대분류": "와인", "유통기한": "", "엑셀기본재고": 10},
+        {"품목명": "화이트와인_B", "대분류": "와인", "유통기한": "", "엑셀기본재고": 5}
+    ])
+
+def get_wine_master_and_logs():
+    if not os.path.exists(WINE_MASTER_FILE):
+        wine_master = load_wine_master()
+        wine_master.to_csv(WINE_MASTER_FILE, index=False, encoding='utf-8-sig')
+        
+    if not os.path.exists(WINE_LOG_FILE):
+        df_empty = pd.DataFrame(columns=["날짜", "대분류", "품목명", "구분", "수량", "유통기한"])
+        df_empty.to_csv(WINE_LOG_FILE, index=False, encoding='utf-8-sig')
+
+    master = pd.read_csv(WINE_MASTER_FILE, encoding='utf-8-sig')
+    master['엑셀기본재고'] = master['엑셀기본재고'].fillna(0).astype(int)
+    master['유통기한'] = master['유통기한'].fillna("").astype(str)
+    logs = pd.read_csv(WINE_LOG_FILE, encoding='utf-8-sig')
+    return master, logs
+
+
 master_data, log_df = get_latest_master_and_logs()
+wine_master_data, wine_log_df = get_wine_master_and_logs()
 
 # 세션 상태 초기화
 if "success_msg" not in st.session_state: st.session_state.success_msg = ""
@@ -120,6 +186,12 @@ if "bulk_download_ready" not in st.session_state: st.session_state.bulk_download
 if "bulk_excel_bytes" not in st.session_state: st.session_state.bulk_excel_bytes = None
 if "bulk_filename" not in st.session_state: st.session_state.bulk_filename = ""
 if "orig_excel_bytes" not in st.session_state: st.session_state.orig_excel_bytes = None
+
+# 와인 전용 세션 상태 초기화
+if "wine_download_ready" not in st.session_state: st.session_state.wine_download_ready = False
+if "wine_excel_bytes" not in st.session_state: st.session_state.wine_excel_bytes = None
+if "wine_filename" not in st.session_state: st.session_state.wine_filename = ""
+if "wine_orig_bytes" not in st.session_state: st.session_state.wine_orig_bytes = None
 
 # 유통기한 임박 계산
 today = datetime.date.today()
@@ -263,13 +335,14 @@ if imminent_items:
         for item in imminent_items:
             st.warning(item)
 
-# 💡 메뉴 구조 변경: 최하단 엑셀 업로드 및 초기화 파트를 '데이터 관리 및 엑셀 동기화' 메뉴로 완전 통합
+# 💡 와인 재고 관리 메뉴 신설 및 반영
 menu = st.sidebar.radio(
     "메뉴 이동", 
     [
         "📥 물품 입고 등록 (개별)", 
         "📤 물품 출고 등록 (소모-개별)", 
         "📝 전품목 일괄 입력 (엑셀 스타일)",
+        "🍷 와인 재고 관리 (일괄 입력)",
         "📋 실시간 현재고 현황판", 
         "📊 월별 수불 대장 및 백업 다운로드",
         "⚙️ 품목 추가/삭제 관리",
@@ -279,6 +352,8 @@ menu = st.sidebar.radio(
 
 if menu != "📝 전품목 일괄 입력 (엑셀 스타일)":
     st.session_state.bulk_download_ready = False
+if menu != "🍷 와인 재고 관리 (일괄 입력)":
+    st.session_state.wine_download_ready = False
 
 if st.session_state.success_msg:
     st.success(st.session_state.success_msg)
@@ -287,10 +362,11 @@ if st.session_state.warning_msg:
     st.warning(st.session_state.warning_msg)
     st.session_state.warning_msg = ""
 
-def show_today_logs_and_management():
+def show_today_logs_and_management(is_wine=False):
     st.markdown("---")
     st.subheader("🔍 오늘 실시간 입력된 내역")
-    current_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+    target_log_file = WINE_LOG_FILE if is_wine else STOCK_LOG_FILE
+    current_logs = pd.read_csv(target_log_file, encoding='utf-8-sig')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     today_df = current_logs[current_logs["날짜"] == today_str]
     
@@ -329,7 +405,7 @@ def show_today_logs_and_management():
                     updated_logs = current_logs
                     st.session_state.success_msg = f"🔧 수량이 {new_qty}개로 정상 수정되었습니다."
                 
-                updated_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
+                updated_logs.to_csv(target_log_file, index=False, encoding='utf-8-sig')
                 st.cache_data.clear()
                 st.rerun()
     else:
@@ -371,7 +447,7 @@ if menu == "📥 물품 입고 등록 (개별)":
                     
         show_today_logs_and_management()
 
-# 2) 出고 등록 메뉴(개별)
+# 2) 출고 등록 메뉴(개별)
 elif menu == "📤 물품 출고 등록 (소모-개별)":
     st.subheader("📤 매장 소모(출고) 등록 (개별)")
     st.info("💡 출고(소모) 수량을 입력한 뒤 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
@@ -445,7 +521,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         
     bulk_df = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], pivot_all, on=['대분류', '품목명'], how='left').fillna(0)
     bulk_df['현재고'] = bulk_df['엑셀기본재고'] + bulk_df['금월 입고'] - bulk_df['월 소모(출고)']
-    bulk_df['현재고'] = bulk_df['현재고'].astype(int)
+    bulk_df['currently_stock'] = bulk_df['현재고'].astype(int)
     
     bulk_df['📥 오늘 입고량'] = 0
     bulk_df['📤 오늘 소모량'] = 0
@@ -606,6 +682,189 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
 
     show_today_logs_and_management()
 
+# 🍷 4) 와인 재고 관리 메뉴 개설 (일괄 입력 엑셀 스타일)
+elif menu == "🍷 와인 재고 관리 (일괄 입력)":
+    st.subheader("🍷 와인 수불 대장 관리 및 일괄 입력 (엑셀 스타일)")
+    st.info("💡 와인 전용 대장인 `와인_입출고양식_디자인적용_현재고요약.xlsx` 파일을 타겟으로 동기화합니다.")
+    
+    if st.session_state.wine_download_ready and st.session_state.wine_excel_bytes:
+        st.success("🎉 와인 변동 내역이 대장 파일에 안전하게 동기화 저장되었습니다!")
+        col_wd1, col_wd2 = st.columns(2)
+        with col_wd1:
+            st.download_button(
+                label="📊 방금 저장된 와인 수불 집계표 다운로드 (Excel)",
+                data=st.session_state.wine_excel_bytes,
+                file_name=st.session_state.wine_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True
+            )
+        with col_wd2:
+            if st.session_state.wine_orig_bytes:
+                st.download_button(
+                    label="📥 수정된 와인 대장 전체 원본 파일 가져오기 (.xlsx)",
+                    data=st.session_state.wine_orig_bytes,
+                    file_name=f"🟢수치최신반영_와인대장_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        st.markdown("---")
+        
+    w_bulk_date = st.date_input("🗓️ 기록할 날짜 선택", datetime.date.today(), key="wine_bulk_date")
+    
+    current_wine_logs = pd.read_csv(WINE_LOG_FILE, encoding='utf-8-sig')
+    
+    if not current_wine_logs.empty:
+        w_pivot = current_wine_logs.pivot_table(
+            index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum'
+        ).fillna(0).reset_index()
+        if "금월 입고" not in w_pivot.columns: w_pivot["금월 입고"] = 0
+        if "월 소모(출고)" not in w_pivot.columns: w_pivot["월 소모(출고)"] = 0
+    else:
+        w_pivot = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
+        
+    w_bulk_df = pd.merge(wine_master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], w_pivot, on=['대분류', '품목명'], how='left').fillna(0)
+    w_bulk_df['현재고'] = w_bulk_df['엑셀기본재고'] + w_bulk_df['금월 입고'] - w_bulk_df['월 소모(출고)']
+    w_bulk_df['현재고'] = w_bulk_df['현재고'].astype(int)
+    
+    w_bulk_df['📥 오늘 입고량'] = 0
+    w_bulk_df['📤 오늘 소모량'] = 0
+    
+    w_bulk_df = w_bulk_df.rename(columns={"유통기한": "⏳ 빈티지/유통기한"})
+    w_display_bulk = w_bulk_df[['대분류', '품목명', '현재고', '📥 오늘 입고량', '📤 오늘 소모량', '⏳ 빈티지/유통기한']].copy()
+    
+    edited_wine_bulk = st.data_editor(
+        w_display_bulk,
+        column_config={
+            "대분류": st.column_config.TextColumn("분류", disabled=True),
+            "품목명": st.column_config.TextColumn("와인 품목명", disabled=True),
+            "현재고": st.column_config.NumberColumn("현재고 (참고용)", disabled=True, format="%d"),
+            "📥 오늘 입고량": st.column_config.NumberColumn("오늘 입고량 입력", min_value=0, step=1, format="%d"),
+            "📤 오늘 소모량": st.column_config.NumberColumn("오늘 소모량 입력", min_value=0, step=1, format="%d"),
+            "⏳ 빈티지/유통기한": st.column_config.TextColumn("정보 수정"),
+        },
+        use_container_width=True,
+        hide_index=True,
+        key="wine_data_editor"
+    )
+    
+    if st.button("💾 위 입력된 와인 내역 일괄 저장하고 엑셀 추출하기", use_container_width=True):
+        w_new_logs = []
+        w_master_update = False
+        w_excel_updated = False
+        
+        if os.path.exists(WINE_EXCEL_PATH):
+            try:
+                wb = openpyxl.load_workbook(WINE_EXCEL_PATH)
+                target_day_text = f"{w_bulk_date.day}일"
+                target_day_num = str(w_bulk_date.day)
+                
+                # 와인 파일 시트 유연성 확보
+                target_sheet = wb.sheetnames[0]
+                for name in wb.sheetnames:
+                    if "와인" in name or "재고" in name:
+                        target_sheet = name
+                        break
+                        
+                ws = wb[target_sheet]
+                header_row = 3 # 헤더 위치에 맞춰 유연하게 조절 가능
+                
+                name_idx, inbound_idx, target_date_col_idx, expiry_idx = None, None, None, None
+                for c in range(1, ws.max_column + 1):
+                    cell_v = ws.cell(row=header_row, column=c).value
+                    if cell_v is None: continue
+                    val = str(cell_v).strip().replace(" ", "")
+                    
+                    if '품목' in val or '와인' in val or '이름' in val or '구분' in val: name_idx = c
+                    elif '입고' in val: inbound_idx = c
+                    elif val == target_day_text or val == target_day_num or val == f"0{target_day_num}": target_date_col_idx = c
+                    elif '유통' in val or '빈티지' in val: expiry_idx = c
+                    
+                if name_idx:
+                    for idx, row in edited_wine_bulk.iterrows():
+                        p_name = row['품목명']
+                        try: in_val = int(float(str(row['📥 오늘 입고량']).strip() or 0))
+                        except: in_val = 0
+                        try: out_val = int(float(str(row['📤 오늘 소모량']).strip() or 0))
+                        except: out_val = 0
+                        utg_val = str(row['⏳ 빈티지/유통기한']).strip() if pd.notna(row['⏳ 빈티지/유통기한']) else ""
+                        
+                        for r in range(header_row + 1, ws.max_row + 1):
+                            ex_item = str(ws.cell(row=r, column=name_idx).value).strip()
+                            if ex_item == p_name:
+                                if inbound_idx and in_val > 0:
+                                    cell_in = ws.cell(row=r, column=inbound_idx)
+                                    cur_in = int(cell_in.value) if cell_in.value is not None else 0
+                                    cell_in.value = cur_in + in_val
+                                if target_date_col_idx and out_val > 0:
+                                    cell_out = ws.cell(row=r, column=target_date_col_idx)
+                                    cur_out = int(cell_out.value) if cell_out.value is not None else 0
+                                    cell_out.value = cur_out + out_val
+                                if expiry_idx and utg_val:
+                                    ws.cell(row=r, column=expiry_idx).value = utg_val
+                                break
+                                
+                wb.save(WINE_EXCEL_PATH)
+                wb.close()
+                w_excel_updated = True
+            except Exception as e:
+                st.error(f"와인 엑셀 반영 중 오류 발생: {e}")
+                
+        for idx, row in edited_wine_bulk.iterrows():
+            p_name = row['품목명']
+            try: in_val = int(float(str(row['📥 오늘 입고량']).strip() or 0))
+            except: in_val = 0
+            try: out_val = int(float(str(row['📤 오늘 소모량']).strip() or 0))
+            except: out_val = 0
+            utg_val = str(row['⏳ 빈티지/유통기한']).strip() if pd.notna(row['⏳ 빈티지/유통기한']) else ""
+            
+            orig_match = wine_master_data[wine_master_data['품목명'] == p_name]
+            if not orig_match.empty:
+                if utg_val != str(orig_match.iloc[0]['유통기한']).strip():
+                    wine_master_data.loc[wine_master_data['품목명'] == p_name, '유통기한'] = utg_val
+                    w_master_update = True
+                    
+            if in_val > 0:
+                w_new_logs.append({"날짜": w_bulk_date.strftime("%Y-%m-%d"), "대분류": "와인", "품목명": p_name, "구분": "금월 입고", "수량": in_val, "유통기한": utg_val})
+            if out_val > 0:
+                w_new_logs.append({"날짜": w_bulk_date.strftime("%Y-%m-%d"), "대분류": "와인", "품목명": p_name, "구분": "월 소모(출고)", "수량": out_val, "유통기한": ""})
+                
+        if w_new_logs or w_master_update or w_excel_updated:
+            if w_new_logs:
+                ex_logs = pd.read_csv(WINE_LOG_FILE, encoding='utf-8-sig')
+                pd.concat([ex_logs, pd.DataFrame(w_new_logs)], ignore_index=True).to_csv(WINE_LOG_FILE, index=False, encoding='utf-8-sig')
+            if w_master_update:
+                wine_master_data.to_csv(WINE_MASTER_FILE, index=False, encoding='utf-8-sig')
+                
+            fresh_w_master, fresh_w_logs = get_wine_master_and_logs()
+            w_month = w_bulk_date.strftime("%Y-%m")
+            
+            if not fresh_w_logs.empty:
+                fresh_w_logs['날짜_dt'] = pd.to_datetime(fresh_w_logs['날짜'])
+                w_fil = fresh_w_logs[fresh_w_logs['날짜_dt'].dt.strftime("%Y-%m") == w_month]
+                if not w_fil.empty:
+                    w_sum = w_fil.pivot_table(index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum').fillna(0).reset_index()
+                    if "금월 입고" not in w_sum.columns: w_sum["금월 입고"] = 0
+                    if "월 소모(출고)" not in w_sum.columns: w_sum["월 소모(출고)"] = 0
+                    w_sum = w_sum.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
+                    w_sum = pd.merge(fresh_w_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], w_sum, on=['대분류', '품목명'], how='inner')
+                    w_sum['실시간 예상 현재고'] = w_sum['엑셀기본재고'] + w_sum['총 입고량'] - w_sum['총 소모량']
+                    
+                    buf = io.BytesIO()
+                    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+                        w_sum.to_excel(writer, index=False, sheet_name=f'{w_month}_와인수불집계')
+                    st.session_state.wine_excel_bytes = buf.getvalue()
+                    st.session_state.wine_filename = f"wine_summary_{w_bulk_date.strftime('%Y%m%d')}.xlsx"
+                    st.session_state.wine_download_ready = True
+                    
+            if os.path.exists(WINE_EXCEL_PATH):
+                with open(WINE_EXCEL_PATH, "rb") as f:
+                    st.session_state.wine_orig_bytes = f.read()
+            st.cache_data.clear()
+            st.rerun()
+            
+    show_today_logs_and_management(is_wine=True)
+
 # 4) 실시간 현재고 현황판
 elif menu == "📋 실시간 현재고 현황판":
     st.subheader("📋 매장 실시간 현재고 현황판")
@@ -614,7 +873,7 @@ elif menu == "📋 실시간 현재고 현황판":
     
     if not fresh_logs.empty:
         pivot_all = fresh_logs.pivot_table(
-            index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum'
+            index=['대분류', '품목명'], columns='구展', values='수량', aggfunc='sum'
         ).fillna(0).reset_index()
         if "금월 입고" not in pivot_all.columns: pivot_all["금월 입고"] = 0
         if "월 소모(출고)" not in pivot_all.columns: pivot_all["월 소모(출고)"] = 0
@@ -775,12 +1034,11 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
     st.dataframe(master_data.sort_values(by=["대분류", "품목명"]), use_container_width=True, hide_index=True)
 
 
-# 7) 💡 신설된 [데이터 관리 및 엑셀 동기화] 통합 메뉴
+# 7) 데이터 관리 및 엑셀 동기화 통합 메뉴
 elif menu == "🛠️ 데이터 관리 및 엑셀 동기화":
     st.subheader("🛠️ 시스템 데이터 관리 및 엑셀 파일 동기화")
     st.markdown("---")
     
-    # --- 엑셀 파일 업로드 & 연동 기능 (VINI COFFEE 전용 구조 반영) ---
     st.markdown("### 📅 새 엑셀파일 업로드 및 실시간 품목 동기화")
     st.info("💡 VINI COFFEE 매출관리 시스템 대장(.xlsx) 파일을 업로드하고 버튼을 누르면 원재료, 부자재, 완제품의 재고 현황을 자동으로 파싱하여 동기화합니다.")
     
@@ -791,7 +1049,6 @@ elif menu == "🛠️ 데이터 관리 및 엑셀 동기화":
         
         if st.button("🚀 업로드된 엑셀 데이터 파싱 및 연동 시작", use_container_width=True):
             try:
-                # 💡 VINI COFFEE 대장의 구조에 특화된 파싱 로직 작동
                 xl = pd.ExcelFile(uploaded_file)
                 sheets_to_try = {
                     "원재료": ["원재료", "원재료(간략)"],
@@ -809,7 +1066,6 @@ elif menu == "🛠️ 데이터 관리 및 엑셀 동기화":
                             break
                     
                     if target_sheet:
-                        # 💡 VINI COFFEE 파일 전용 조건: 상단 2글자 패스 및 3행 헤더 적용 (skiprows=2)
                         df = pd.read_excel(xl, sheet_name=target_sheet, skiprows=2)
                         df.columns = [str(c).strip().replace(" ", "") for c in df.columns]
                         
@@ -845,11 +1101,8 @@ elif menu == "🛠️ 데이터 관리 및 엑셀 동기화":
                 
                 if uploaded_master_list:
                     final_uploaded_master = pd.concat(uploaded_master_list, ignore_index=True)
-                    
-                    # 💡 로컬 캐시 서버에 덮어쓰기 저장 및 캐시 초기화
                     final_uploaded_master.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
                     
-                    # 업로드된 원본 임시 서버 파일 교체
                     with open(ORIGINAL_EXCEL_PATH, "wb") as f:
                         f.write(uploaded_file.getbuffer())
                         
@@ -907,6 +1160,8 @@ elif menu == "🛠️ 데이터 관리 및 엑셀 동기화":
     if st.button("🚀 서버 강제 공장 초기화 실행", type="primary", disabled=not confirm_destroy):
         if os.path.exists(STOCK_LOG_FILE): os.remove(STOCK_LOG_FILE)  
         if os.path.exists(CUSTOM_MASTER_FILE): os.remove(CUSTOM_MASTER_FILE)  
+        if os.path.exists(WINE_LOG_FILE): os.remove(WINE_LOG_FILE)
+        if os.path.exists(WINE_MASTER_FILE): os.remove(WINE_MASTER_FILE)
         st.cache_data.clear()
         st.session_state.success_msg = f"💥 공장 초기화 완수! 기본 원본 엑셀 파일 데이터로 복구되었습니다."
         st.rerun()
