@@ -8,36 +8,32 @@ import openpyxl
 import streamlit as st
 import json
 
-# 1. 세션 상태 및 로그인 확인 (앞서 만든 로그인 코드 구조 연동 가능)
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = True  # 예시를 위해 True 처리
+import streamlit as st
+import json
+import gspread
+import pandas as pd
 
-# 2. Secrets에서 JSON 문자열을 읽어와 딕셔너리로 변환
-creds_dict = json.loads(st.secrets["gcp_credentials_json"])
-auth_user_dict = json.loads(st.secrets["gcp_authorized_user_json"])
+# 1. Secrets에서 문자열 안전하게 가져오기
+raw_creds = st.secrets.get("gcp_credentials_json", "")
+raw_auth = st.secrets.get("gcp_authorized_user_json", "")
 
-# 3. gspread OAuth 인증 처리 (서비스 계정 키 없이 인증 완료)
+# 디버깅용 안전장치: 데이터가 비어있다면 에러 메시지 출력
+if not raw_creds or not raw_auth:
+    st.error("Streamlit Secrets에 구글 인증 정보가 등록되지 않았거나 비어있습니다.")
+    st.stop()
+
+try:
+    # .strip()을 붙여서 앞뒤의 무의미한 줄바꿈이나 공백을 완전히 제거합니다.
+    creds_dict = json.loads(raw_creds.strip())
+    auth_user_dict = json.loads(raw_auth.strip())
+except json.decoder.JSONDecodeError as e:
+    st.error("⚠️ 구글 인증서 JSON 형식이 올바르지 않습니다. Secrets 입력을 확인해 주세요.")
+    # 실제 어떤 글자가 읽혔는지 앞부분만 안전하게 출력해서 확인 (보안을 위해 일부만)
+    st.warning(f"읽어온 데이터 앞부분: {raw_creds[:30]}...")
+    st.stop()
+
+# 2. gspread 인증 진행
 gc = gspread.oauth_from_dict(creds_dict, auth_user_dict)
-
-# 4. 내 구글 계정이 접근할 수 있는 스프레드시트 주소 넣기
-SPR_URL = "https://docs.google.com/spreadsheets/d/본인의_스프레드시트_ID/edit"
-sh = gc.open_by_url(SPR_URL)
-worksheet = sh.get_worksheet(0)  # 첫 번째 시트 선택
-
-# --- 데이터 불러오기 예시 ---
-data = worksheet.get_all_records()
-df = pd.DataFrame(data)
-
-st.title("📦 매장 실시간 재고 현황 (OAuth 보안 적용)")
-st.dataframe(df)
-
-# --- 데이터 저장하기 예시 ---
-if st.button("재고 데이터 구글 시트에 업데이트"):
-    # 가상의 데이터 수정 후 저장 예시
-    worksheet.clear()
-    # 열 이름과 데이터값을 리스트 형태로 변환하여 통째로 업데이트
-    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-    st.success("성공적으로 동기화되었습니다!")
 
 # 1. 세션 상태(Session State)에 로그인 유무 저장할 공간 초기화
 if "logged_in" not in st.session_state:
