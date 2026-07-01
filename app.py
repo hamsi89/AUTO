@@ -42,6 +42,7 @@ def load_excel_master():
                         break
                 
                 if target_sheet:
+                    # 💡 실제 데이터 대장은 3번째 행(skiprows=2)부터 시작합니다.
                     df = pd.read_excel(xl, sheet_name=target_sheet, skiprows=2)
                     df.columns = [str(c).strip().replace(" ", "") for c in df.columns]
                     
@@ -262,6 +263,7 @@ if imminent_items:
         for item in imminent_items:
             st.warning(item)
 
+# 💡 메뉴 구조 변경: 최하단 엑셀 업로드 및 초기화 파트를 '데이터 관리 및 엑셀 동기화' 메뉴로 완전 통합
 menu = st.sidebar.radio(
     "메뉴 이동", 
     [
@@ -270,7 +272,8 @@ menu = st.sidebar.radio(
         "📝 전품목 일괄 입력 (엑셀 스타일)",
         "📋 실시간 현재고 현황판", 
         "📊 월별 수불 대장 및 백업 다운로드",
-        "⚙️ 품목 추가/삭제 관리"
+        "⚙️ 품목 추가/삭제 관리",
+        "🛠️ 데이터 관리 및 엑셀 동기화"
     ]
 )
 
@@ -368,7 +371,7 @@ if menu == "📥 물품 입고 등록 (개별)":
                     
         show_today_logs_and_management()
 
-# 2) 출고 등록 메뉴(개별)
+# 2) 出고 등록 메뉴(개별)
 elif menu == "📤 물품 출고 등록 (소모-개별)":
     st.subheader("📤 매장 소모(출고) 등록 (개별)")
     st.info("💡 출고(소모) 수량을 입력한 뒤 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
@@ -483,7 +486,6 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                     p_name = row['품목명']
                     p_cat = row['대분류']
                     
-                    # 🎯 [오류 원천 수정] 빈칸 처리용 정밀 전처리 코드 적용
                     try: in_val = int(float(str(row['📥 오늘 입고량']).strip() or 0))
                     except: in_val = 0
                         
@@ -513,14 +515,12 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                                 excel_item_name = str(ws.cell(row=r, column=name_idx).value).strip()
                                 if excel_item_name == p_name:
                                     
-                                    # 입고 입력값은 엑셀 '금월 입고' 열에 가산
                                     if inbound_idx and in_val > 0:
                                         cell_in = ws.cell(row=r, column=inbound_idx)
                                         try: current_in = int(cell_in.value) if cell_in.value is not None else 0
                                         except: current_in = 0
                                         cell_in.value = current_in + in_val
                                         
-                                    # 소모 입력값은 엑셀 선택된 '해당 일자' 열에 가산
                                     if target_date_col_idx and out_val > 0:
                                         cell_out = ws.cell(row=r, column=target_date_col_idx)
                                         try: current_out = int(cell_out.value) if cell_out.value is not None else 0
@@ -772,8 +772,102 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                 st.rerun()
                 
     st.markdown("---")
-    st.subheader("🚨 데이터 초기화 및 안전 백업")
+    st.dataframe(master_data.sort_values(by=["대분류", "품목명"]), use_container_width=True, hide_index=True)
+
+
+# 7) 💡 신설된 [데이터 관리 및 엑셀 동기화] 통합 메뉴
+elif menu == "🛠️ 데이터 관리 및 엑셀 동기화":
+    st.subheader("🛠️ 시스템 데이터 관리 및 엑셀 파일 동기화")
+    st.markdown("---")
     
+    # --- 엑셀 파일 업로드 & 연동 기능 (VINI COFFEE 전용 구조 반영) ---
+    st.markdown("### 📅 새 엑셀파일 업로드 및 실시간 품목 동기화")
+    st.info("💡 VINI COFFEE 매출관리 시스템 대장(.xlsx) 파일을 업로드하고 버튼을 누르면 원재료, 부자재, 완제품의 재고 현황을 자동으로 파싱하여 동기화합니다.")
+    
+    uploaded_file = st.file_uploader("엑셀 대장 파일을 업로드하세요 (.xlsx)", type=["xlsx"], key="vini_uploader")
+
+    if uploaded_file is not None:
+        st.success("파일이 웹 브라우저에 성공적으로 준비되었습니다!")
+        
+        if st.button("🚀 업로드된 엑셀 데이터 파싱 및 연동 시작", use_container_width=True):
+            try:
+                # 💡 VINI COFFEE 대장의 구조에 특화된 파싱 로직 작동
+                xl = pd.ExcelFile(uploaded_file)
+                sheets_to_try = {
+                    "원재료": ["원재료", "원재료(간략)"],
+                    "부자재": ["부자재", "부자재(간략)"],
+                    "디저트&완제품": ["디저트&완제품", "디저트&완제품(간략)"]
+                }
+                
+                uploaded_master_list = []
+                
+                for cat, standard_names in sheets_to_try.items():
+                    target_sheet = None
+                    for name in xl.sheet_names:
+                        if name.strip() in standard_names or cat in name:
+                            target_sheet = name
+                            break
+                    
+                    if target_sheet:
+                        # 💡 VINI COFFEE 파일 전용 조건: 상단 2글자 패스 및 3행 헤더 적용 (skiprows=2)
+                        df = pd.read_excel(xl, sheet_name=target_sheet, skiprows=2)
+                        df.columns = [str(c).strip().replace(" ", "") for c in df.columns]
+                        
+                        name_col = None
+                        for col in df.columns:
+                            if '품목이름' in col or '구분' in col or '품목명' in col:
+                                name_col = col
+                                break
+                        
+                        if name_col:
+                            df = df.dropna(subset=[name_col])
+                            df = df[df[name_col].astype(str).str.strip() != '0']
+                            df = df[df[name_col].astype(str).str.strip() != '']
+                            
+                            expiry_col = [c for c in df.columns if '유통' in c]
+                            stock_col = [c for c in df.columns if '재고' in c]
+                            
+                            temp_df = pd.DataFrame()
+                            temp_df['품목명'] = df[name_col].astype(str).str.strip()
+                            temp_df['대분류'] = cat
+                            
+                            if expiry_col:
+                                temp_df['유통기한'] = df[expiry_col[0]].astype(str).str.strip()
+                            else:
+                                temp_df['유통기한'] = ""
+                                
+                            if stock_col:
+                                temp_df['엑셀기본재고'] = pd.to_numeric(df[stock_col[0]], errors='coerce').fillna(0).astype(int)
+                            else:
+                                temp_df['엑셀기본재고'] = 0
+                                
+                            uploaded_master_list.append(temp_df)
+                
+                if uploaded_master_list:
+                    final_uploaded_master = pd.concat(uploaded_master_list, ignore_index=True)
+                    
+                    # 💡 로컬 캐시 서버에 덮어쓰기 저장 및 캐시 초기화
+                    final_uploaded_master.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
+                    
+                    # 업로드된 원본 임시 서버 파일 교체
+                    with open(ORIGINAL_EXCEL_PATH, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                        
+                    st.subheader("📋 새 엑셀파일에서 정상 인식된 대장 내역")
+                    st.dataframe(final_uploaded_master, use_container_width=True, hide_index=True)
+                    st.balloons()
+                    st.success("🎉 업로드된 엑셀 파일의 시트별 품목과 재고량이 시스템 마스터에 오차 없이 완벽 연동되었습니다!")
+                    st.cache_data.clear()
+                else:
+                    st.error("⚠️ 업로드된 엑셀 파일에서 '원재료', '부자재' 또는 '디저트' 시트를 매칭하지 못했거나 품목 열을 찾을 수 없습니다.")
+                    
+            except Exception as e:
+                st.error(f"엑셀 대장 파일을 파싱하는 도중 에러가 발생했습니다: {e}")
+                
+    st.markdown("---")
+    
+    # --- 초기화 기능 레이아웃 ---
+    st.markdown("### 🚨 기존 데이터 초기화 섹션")
     col_reset1, col_reset2 = st.columns(2)
     with col_reset1:
         st.markdown("#### 📅 당일 데이터 초기화")
@@ -806,52 +900,13 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                 st.rerun()
                 
     st.markdown("---")
-    st.markdown("### 🔥 새 엑셀파일 동기화 및 전체 공장 초기화")
-    st.warning("과거에 생성되었던 데이터 백업 캐시를 완전히 강제 삭제하고, 새로운 엑셀 기준으로 정렬합니다.")
+    st.markdown("### 🔥 서버 전체 공장 초기화")
+    st.warning("과거에 생성되었던 데이터 백업 캐시를 완전히 강제 삭제하고, 시스템 내장 원본 엑셀 기준으로 정렬합니다.")
     
-    confirm_destroy = st.checkbox("⚠️ 과거 기록된 로컬 데이터베이스를 전부 삭제하고 새 엑셀 기준으로 정렬하는 것에 동의합니다.", key="confirm_destroy")
+    confirm_destroy = st.checkbox("⚠️ 과거 기록된 로컬 데이터베이스를 전부 삭제하고 시스템 초기 파일 기준으로 정렬하는 것에 동의합니다.", key="confirm_destroy")
     if st.button("🚀 서버 강제 공장 초기화 실행", type="primary", disabled=not confirm_destroy):
         if os.path.exists(STOCK_LOG_FILE): os.remove(STOCK_LOG_FILE)  
         if os.path.exists(CUSTOM_MASTER_FILE): os.remove(CUSTOM_MASTER_FILE)  
         st.cache_data.clear()
-        st.session_state.success_msg = f"💥 공장 초기화 완수! 새로운 엑셀 파일 `{ORIGINAL_EXCEL_PATH}` 데이터로 완벽하게 복구되었습니다."
+        st.session_state.success_msg = f"💥 공장 초기화 완수! 기본 원본 엑셀 파일 데이터로 복구되었습니다."
         st.rerun()
-                
-    st.markdown("---")
-    st.dataframe(master_data.sort_values(by=["대분류", "품목명"]), use_container_width=True, hide_index=True)
-
-st.title("엑셀 데이터 업로드 프로그램")
-
-# 1. 파일 업로드 컴포넌트
-uploaded_file = st.file_uploader("엑셀 파일을 업로드하세요 (.xlsx)", type=["xlsx"])
-
-# 파일이 업로드되었는지 확인
-if uploaded_file is not None:
-    st.success("파일이 성공적으로 업로드되었습니다!")
-    
-    # 2. [데이터 인식] 버튼 생성
-    # 사용자가 이 버튼을 클릭해야만 이 안의 코드(if문 내부)가 실행됩니다.
-    if st.button("엑셀 데이터 인식 및 분석 시작"):
-        try:
-            # 엑셀 파일 읽기
-            df = pd.read_excel(uploaded_file)
-            
-            # 열 이름(공백 제거) 표준화
-            df.columns = [col.strip() for col in df.columns]
-            
-            # 필수 열(품목, 수량)이 존재하는지 체크
-            required_columns = ['품목', '수량']
-            if all(col in df.columns for col in required_columns):
-                
-                # 정상적으로 데이터를 불러온 경우 화면에 표시
-                st.subheader("📋 인식된 데이터")
-                st.dataframe(df[['품목', '수량']])
-                
-                # 추가 데이터 처리 로직을 여기에 작성 (예: DB 저장, 자동화 작업 등)
-                st.balloons() # 성공 축하 효과
-                
-            else:
-                st.error(f"엑셀 파일에 '품목' 또는 '수량' 열이 없습니다. 열 이름을 확인해주세요. (현재 열: {list(df.columns)})")
-                
-        except Exception as e:
-            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
