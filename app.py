@@ -5,13 +5,11 @@ import os
 import io
 import shutil
 import openpyxl  
-import streamlit as st
-import json
-
-import streamlit as st
 import json
 import gspread
-import pandas as pd
+
+# [주의] st.set_page_config는 무조건 앱 전체에서 최상단에 딱 1번만 실행되어야 합니다.
+st.set_page_config(page_title="VINI COFFEE 재고관리 시스템", page_icon="☕", layout="wide")
 
 # 1. Secrets에서 문자열 안전하게 가져오기
 raw_creds = st.secrets.get("gcp_credentials_json", "")
@@ -28,7 +26,6 @@ try:
     auth_user_dict = json.loads(raw_auth.strip())
 except json.decoder.JSONDecodeError as e:
     st.error("⚠️ 구글 인증서 JSON 형식이 올바르지 않습니다. Secrets 입력을 확인해 주세요.")
-    # 실제 어떤 글자가 읽혔는지 앞부분만 안전하게 출력해서 확인 (보안을 위해 일부만)
     st.warning(f"읽어온 데이터 앞부분: {raw_creds[:30]}...")
     st.stop()
 
@@ -39,10 +36,8 @@ gc = gspread.oauth_from_dict(creds_dict, auth_user_dict)
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# 2. 로그인하지 않은 상태일 때 -> 로그인 화면 표시
+# 2. 로그인하지 않은 상태일 때 -> 로그인 화면 표시 후 즉시 차단
 if not st.session_state.logged_in:
-    st.set_page_config(page_title="매장 재고 관리 - 로그인", page_icon="🔒")
-    
     st.title("🔒 매장 재고 관리 시스템")
     st.subheader("관리자 인증이 필요합니다.")
     
@@ -55,33 +50,13 @@ if not st.session_state.logged_in:
         if password_input == "122000":
             st.session_state.logged_in = True
             st.success("인증에 성공했습니다! 잠시만 기다려주세요...")
-            st.rerun()  # 화면을 새로고침하여 본 화면(else문)으로 즉시 전환
+            st.rerun()  # 화면을 새로고침하여 본 화면으로 즉시 전환
         else:
             st.error("비밀번호가 올바르지 않습니다. 다시 입력해주세요.")
+    st.stop()  # 인증 성공 전까지는 아래 코드를 절대 실행하지 않음
 
-# 3. 로그인 성공 상태일 때 -> 실제 재고 관리 앱 화면 표시
-else:
-    st.set_page_config(page_title="매장 재고 관리 시스템", page_icon="📦")
-    
-    # 사이드바에 로그아웃 버튼 배치
-    st.sidebar.title("관리자 메뉴")
-    if st.sidebar.button("로그아웃"):
-        st.session_state.logged_in = False
-        st.rerun()
+# --- 여기서부터 로그인 성공 상태일 때만 정상 실행되는 구역 ---
 
-    # =========================================================
-    # 여기서부터 기존에 작성하신 재고 관리 코드를 넣으시면 됩니다.
-    # =========================================================
-    st.title("📦 실시간 매장 재고 관리 대시보드")
-    st.info(f"현재 관리자 모드로 접속 중입니다.")
-    
-    # 예시 화면 구성
-    st.write("---")
-    st.subheader("재고 현황 조회 및 수정")
-    
-    # (예시) pandas로 CSV 읽어오기 등의 로직이 이 아래로 들어갑니다.
-    # df = pd.read_csv("inventory.csv")
-    # st.dataframe(df)
 # 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
 CUSTOM_MASTER_FILE = "vini_custom_master.csv"  
@@ -91,8 +66,6 @@ STOCK_LOG_FILE = "vini_daily_stock_log.csv"
 WINE_EXCEL_PATH = "와인_입출고양식_디자인적용_현재고요약.xlsx"
 WINE_MASTER_FILE = "wine_custom_master.csv"
 WINE_LOG_FILE = "wine_daily_stock_log.csv"
-
-st.set_page_config(page_title="VINI COFFEE 재고관리 시스템", layout="wide")
 
 # 원본 엑셀의 진짜 시트 이름 지정
 SHEET_MAP = {
@@ -196,14 +169,12 @@ def load_wine_master():
     if os.path.exists(WINE_EXCEL_PATH):
         try:
             xl = pd.ExcelFile(WINE_EXCEL_PATH)
-            # 첫 번째 시트 혹은 '와인' 단어가 포함된 시트 선택
             target_sheet = xl.sheet_names[0]
             for name in xl.sheet_names:
                 if "와인" in name or "재고" in name:
                     target_sheet = name
                     break
             
-            # 기본적으로 헤더가 상단에 위치해 있으므로 필요시 skiprows 조절 (여기서는 기본값 2 적용)
             df = pd.read_excel(xl, sheet_name=target_sheet, skiprows=2)
             df.columns = [str(c).strip().replace(" ", "") for c in df.columns]
             
@@ -249,7 +220,6 @@ def get_wine_master_and_logs():
     logs = pd.read_csv(WINE_LOG_FILE, encoding='utf-8-sig')
     return master, logs
 
-
 master_data, log_df = get_latest_master_and_logs()
 wine_master_data, wine_log_df = get_wine_master_and_logs()
 
@@ -282,7 +252,6 @@ for idx, row in master_data.iterrows():
                 imminent_items.append(f"• **{row['품목명']}** ({days_left}일 남음)")
         except:
             pass
-
 
 # --- 개별 입출고 마스터 반영 함수 ---
 def update_excel_vini_rule(cat, item_name, qty, target_date, new_expiry=None, action="inbound"):
@@ -345,7 +314,6 @@ def update_excel_vini_rule(cat, item_name, qty, target_date, new_expiry=None, ac
         st.error(f"서버 엑셀 장부 반영 실패: {e}")
         return False
 
-
 # --- 콜백 함수 구역 ---
 def save_inbound_callback():
     qty = st.session_state.in_qty
@@ -403,15 +371,18 @@ def save_outbound_callback():
         st.warning("⚠️ 출고 수량을 1개 이상 입력하셔야 합니다.")
 
 
-# --- UI 레이아웃 ---
-st.title("☕ VINI COFFEE 안락동점 통합 재고관리 시스템")
+# --- 사이드바 및 레이아웃 정의 ---
+st.sidebar.title("관리자 메뉴")
+st.sidebar.info("현재 관리자 모드로 접속 중입니다.")
+if st.sidebar.button("로그아웃"):
+    st.session_state.logged_in = False
+    st.rerun()
 
 if imminent_items:
     with st.sidebar.expander("🚨 유통기한 임박 품목 알림", expanded=True):
         for item in imminent_items:
             st.warning(item)
 
-# 💡 와인 재고 관리 메뉴 신설 및 반영
 menu = st.sidebar.radio(
     "메뉴 이동", 
     [
@@ -523,7 +494,7 @@ if menu == "📥 물품 입고 등록 (개별)":
                     
         show_today_logs_and_management()
 
-# 2) 출고 등록 메뉴(개별)
+# 2) 出고 등록 메뉴(개별)
 elif menu == "📤 물품 출고 등록 (소모-개별)":
     st.subheader("📤 매장 소모(출고) 등록 (개별)")
     st.info("💡 출고(소모) 수량을 입력한 뒤 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
@@ -565,7 +536,8 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                 file_name=st.session_state.bulk_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
-                use_container_width=True
+                use_container_width=True,
+                key="vini_bulk_summary_download_btn"  # 고유 Key 추가하여 오작동 방지
             )
         with col_dl2:
             if st.session_state.orig_excel_bytes:
@@ -574,7 +546,8 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                     data=st.session_state.orig_excel_bytes,
                     file_name=f"🟢수치최신반영_VINI대장_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
+                    key="vini_orig_master_download_btn"  # 고유 Key 추가하여 오작동 방지
                 )
         st.markdown("---")
     
@@ -758,7 +731,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
 
     show_today_logs_and_management()
 
-# 🍷 4) 와인 재고 관리 메뉴 개설 (일괄 입력 엑셀 스타일)
+# 🍷 4) 와인 재고 관리 메뉴 (일괄 입력 엑셀 스타일)
 elif menu == "🍷 와인 재고 관리 (일괄 입력)":
     st.subheader("🍷 와인 수불 대장 관리 및 일괄 입력 (엑셀 스타일)")
     st.info("💡 와인 전용 대장인 `와인_입출고양식_디자인적용_현재고요약.xlsx` 파일을 타겟으로 동기화합니다.")
@@ -773,7 +746,8 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
                 file_name=st.session_state.wine_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
-                use_container_width=True
+                use_container_width=True,
+                key="wine_bulk_summary_download_btn"  # 고유 Key 추가하여 오작동 방지
             )
         with col_wd2:
             if st.session_state.wine_orig_bytes:
@@ -782,7 +756,8 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
                     data=st.session_state.wine_orig_bytes,
                     file_name=f"🟢수치최신반영_와인대장_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
+                    key="wine_orig_master_download_btn"  # 고유 Key 추가하여 오작동 방지
                 )
         st.markdown("---")
         
@@ -835,7 +810,6 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
                 target_day_text = f"{w_bulk_date.day}일"
                 target_day_num = str(w_bulk_date.day)
                 
-                # 와인 파일 시트 유연성 확보
                 target_sheet = wb.sheetnames[0]
                 for name in wb.sheetnames:
                     if "와인" in name or "재고" in name:
@@ -843,7 +817,7 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
                         break
                         
                 ws = wb[target_sheet]
-                header_row = 3 # 헤더 위치에 맞춰 유연하게 조절 가능
+                header_row = 3
                 
                 name_idx, inbound_idx, target_date_col_idx, expiry_idx = None, None, None, None
                 for c in range(1, ws.max_column + 1):
@@ -1047,14 +1021,16 @@ elif menu == "📊 월별 수불 대장 및 백업 다운로드":
                     label=f"📊 {selected_month} 월간 집계표 다운로드 (Excel)",
                     data=excel_summary_bytes,
                     file_name=f"vini_coffee_summary_{selected_month}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="monthly_summary_download_btn"
                 )
             with col_b2:
                 st.download_button(
                     label="📝 전체 일별 로그 백업 다운로드 (Excel)",
                     data=excel_raw_bytes,
                     file_name="vini_daily_stock_log_backup.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="daily_log_backup_download_btn"
                 )
 
 # 6) 품목 추가 / 삭제 관리 화면
