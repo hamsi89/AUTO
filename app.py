@@ -396,7 +396,7 @@ menu = st.sidebar.radio(
     ]
 )
 
-# [개선 핵심 1] 메뉴 이동 시 상대 메뉴의 임시 버퍼 데이터를 강제로 비워 교차 오염을 원천 차단합니다.
+# 메뉴 이동 시 상대 메뉴의 임시 버퍼 데이터를 강제로 비워 교차 오염을 원천 차단합니다.
 if menu != "📝 전품목 일괄 입력 (엑셀 스타일)":
     st.session_state.bulk_download_ready = False
     st.session_state.bulk_excel_bytes = None
@@ -534,7 +534,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         st.success("🎉 일괄 변동 내역이 지정하신 시트의 [금월 입고] 열과 [해당 일] 열에 오차 없이 동시에 저장되었습니다!")
         col_dl1, col_dl2 = st.columns(2)
         
-        # [개선 핵심 2] 버튼 렌더링마다 유니크한 초 단위 타임스탬프를 Key에 결합해 Streamlit 버퍼 캐시를 완벽히 깨부숩니다.
+        # 버튼 렌더링마다 유니크한 초 단위 타임스탬프를 Key에 결합해 Streamlit 버퍼 캐시를 완벽히 깨부숩니다.
         bulk_ts = datetime.datetime.now().strftime("%H%M%S")
         
         with col_dl1:
@@ -638,7 +638,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                             if cell_v is None: continue
                             val = str(cell_v).strip().replace(" ", "")
                             
-                            if '품목이름' in val or '품목명' in val or '구분' in val: name_idx = c
+                            if '품목이름' in val or '품목명' in val or '구บ' in val or '구분' in val: name_idx = c
                             elif '금월입고' in val or '입고' in val: inbound_idx = c 
                             elif val == target_day_text or val == target_day_num or val == f"0{target_day_num}": target_date_col_idx = c 
                             elif '유통' in val: expiry_idx = c
@@ -748,7 +748,7 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
         st.success("🎉 와인 변동 내역이 대장 파일에 안전하게 동기화 저장되었습니다!")
         col_wd1, col_wd2 = st.columns(2)
         
-        # [개선 핵심 3] 와인 역시 다운로드 컴포넌트에 동적 타임스탬프 Key를 주어 캐시 간섭을 완전 차단합니다.
+        # 와인 역시 다운로드 컴포넌트에 동적 타임스탬프 Key를 주어 캐시 간섭을 완전 차단합니다.
         wine_ts = datetime.datetime.now().strftime("%H%M%S")
         
         with col_wd1:
@@ -788,13 +788,14 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
         
     w_bulk_df = pd.merge(wine_master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], w_pivot, on=['대분류', '품목명'], how='left').fillna(0)
     w_bulk_df['현재고'] = w_bulk_df['엑셀기본재고'] + w_bulk_df['금월 입고'] - w_bulk_df['월 소모(출고)']
-    w_bulk_df['현재고'] = w_bulk_df['현재고'].astype(int)
+    w_bulk_df['currently_stock'] = w_bulk_df['현재고'].astype(int)
     
     w_bulk_df['📥 오늘 입고량'] = 0
     w_bulk_df['📤 오늘 소모량'] = 0
     
     w_bulk_df = w_bulk_df.rename(columns={"유통기한": "⏳ 빈티지/유통기한"})
-    w_display_bulk = w_bulk_df[['대분류', '품목명', '현재고', '📥 오늘 입고량', '📤 오늘 소모량', '⏳ 빈티지/유통기한']].copy()
+    w_display_bulk = w_bulk_df[['대분류', '품목명', 'currently_stock', '📥 오늘 입고량', '📤 오늘 소모량', '⏳ 빈티지/유통기한']].copy()
+    w_display_bulk = w_display_bulk.rename(columns={"currently_stock": "현재고"})
     
     edited_wine_bulk = st.data_editor(
         w_display_bulk,
@@ -1229,4 +1230,3 @@ elif menu == "🛠️ 데이터 관리 및 엑셀 동기화":
         st.cache_data.clear()
         st.session_state.success_msg = f"💥 공장 초기화 완수! 기본 원본 엑셀 파일 데이터로 복구되었습니다."
         st.rerun()
-        st.rerun()
