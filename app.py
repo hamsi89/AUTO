@@ -5,7 +5,55 @@ import os
 import io
 import shutil
 import openpyxl  
+import streamlit as st
 
+# 1. 세션 상태(Session State)에 로그인 유무 저장할 공간 초기화
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+# 2. 로그인하지 않은 상태일 때 -> 로그인 화면 표시
+if not st.session_state.logged_in:
+    st.set_page_config(page_title="매장 재고 관리 - 로그인", page_icon="🔒")
+    
+    st.title("🔒 매장 재고 관리 시스템")
+    st.subheader("관리자 인증이 필요합니다.")
+    
+    # 비밀번호 입력창 (type="password"로 설정하여 입력값이 *로 가려짐)
+    password_input = st.text_input("관리자 비밀번호를 입력하세요", type="password")
+    login_button = st.button("로그인")
+
+    # 로그인 버튼을 누르거나, 엔터를 쳤을 때 실행
+    if login_button or password_input:
+        if password_input == "122000":
+            st.session_state.logged_in = True
+            st.success("인증에 성공했습니다! 잠시만 기다려주세요...")
+            st.rerun()  # 화면을 새로고침하여 본 화면(else문)으로 즉시 전환
+        else:
+            st.error("비밀번호가 올바르지 않습니다. 다시 입력해주세요.")
+
+# 3. 로그인 성공 상태일 때 -> 실제 재고 관리 앱 화면 표시
+else:
+    st.set_page_config(page_title="매장 재고 관리 시스템", page_icon="📦")
+    
+    # 사이드바에 로그아웃 버튼 배치
+    st.sidebar.title("관리자 메뉴")
+    if st.sidebar.button("로그아웃"):
+        st.session_state.logged_in = False
+        st.rerun()
+
+    # =========================================================
+    # 여기서부터 기존에 작성하신 재고 관리 코드를 넣으시면 됩니다.
+    # =========================================================
+    st.title("📦 실시간 매장 재고 관리 대시보드")
+    st.info(f"현재 관리자 모드로 접속 중입니다.")
+    
+    # 예시 화면 구성
+    st.write("---")
+    st.subheader("재고 현황 조회 및 수정")
+    
+    # (예시) pandas로 CSV 읽어오기 등의 로직이 이 아래로 들어갑니다.
+    # df = pd.read_csv("inventory.csv")
+    # st.dataframe(df)
 # 파일 이름 설정
 ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
 CUSTOM_MASTER_FILE = "vini_custom_master.csv"  
