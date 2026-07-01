@@ -6,6 +6,7 @@ import io
 import shutil
 import openpyxl  
 import streamlit as st
+import json
 
 # 1. 세션 상태 및 로그인 확인 (앞서 만든 로그인 코드 구조 연동 가능)
 if "logged_in" not in st.session_state:
