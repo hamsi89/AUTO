@@ -135,7 +135,7 @@ for idx, row in master_data.iterrows():
             pass
 
 
-# --- 🎯 [정답 규칙 구현] 입고는 '금월 입고' 열에, 소모는 '선택한 일자 열'에 분리 주입하는 함수 ---
+# --- 개별 입출고 마스터 반영 함수 ---
 def update_excel_vini_rule(cat, item_name, qty, target_date, new_expiry=None, action="inbound"):
     if not os.path.exists(ORIGINAL_EXCEL_PATH):
         st.error(f"서버에 원본 엑셀 파일을 찾을 수 없습니다: {ORIGINAL_EXCEL_PATH}")
@@ -146,11 +146,9 @@ def update_excel_vini_rule(cat, item_name, qty, target_date, new_expiry=None, ac
         if target_sheet not in wb.sheetnames:
             return False
         ws = wb[target_sheet]
-        header_row = 3 # 3열 헤더
+        header_row = 3 
         
         name_col_idx, expiry_col_idx, target_col_idx = None, None, None
-        
-        # 날짜 텍스트 조건 정의
         target_day_num = str(target_date.day)          
         target_day_label = f"{target_date.day}일"       
         
@@ -159,17 +157,11 @@ def update_excel_vini_rule(cat, item_name, qty, target_date, new_expiry=None, ac
             if cell_raw is None: continue
             val = str(cell_raw).strip().replace(" ", "")
             
-            # 기본 컬럼 매칭
-            if '품목이름' in val or '품목명' in val or '구분' in val: 
-                name_col_idx = col
-            elif '유통' in val: 
-                expiry_col_idx = col
+            if '품목이름' in val or '품목명' in val or '구분' in val: name_col_idx = col
+            elif '유통' in val: expiry_col_idx = col
             
-            # [규칙 적용] 입고는 '금월입고' 열 추적 / 출고는 '해당 일(예: 30일)' 열 추적
-            if action == "inbound" and ('금월 입고' in val or '입고' in val):
-                target_col_idx = col
-            elif action == "outbound" and (val == target_day_label or val == target_day_num or val == f"0{target_day_num}"):
-                target_col_idx = col
+            if action == "inbound" and ('금월입고' in val or '입고' in val): target_col_idx = col
+            elif action == "outbound" and (val == target_day_label or val == target_day_num or val == f"0{target_day_num}"): target_col_idx = col
 
         if not name_col_idx:
             st.error("엑셀 헤더 구조에서 '품목이름' 컬럼을 찾지 못했습니다.")
@@ -188,12 +180,8 @@ def update_excel_vini_rule(cat, item_name, qty, target_date, new_expiry=None, ac
                 try: current_val = int(target_cell.value) if target_cell.value is not None else 0
                 except: current_val = 0
 
-                # 엑셀의 기존 값에 오늘 입력받은 수치를 누적해서 가산합 처리
                 target_cell.value = current_val + qty
-                
-                if new_expiry and expiry_col_idx:
-                    ws.cell(row=row, column=expiry_col_idx).value = new_expiry
-                
+                if new_expiry and expiry_col_idx: ws.cell(row=row, column=expiry_col_idx).value = new_expiry
                 item_found = True
                 break
                 
@@ -218,7 +206,6 @@ def save_inbound_callback():
         in_date_val = st.session_state.in_date
         expiry_str = st.session_state.in_utg.strftime("%Y-%m-%d")
         
-        # 규칙 1: 입고는 '금월 입고' 열에 누적 가산
         excel_success = update_excel_vini_rule(cat, item, qty, in_date_val, new_expiry=expiry_str, action="inbound")
         
         if excel_success:
@@ -246,7 +233,6 @@ def save_outbound_callback():
         item = st.session_state.out_item
         out_date_val = st.session_state.out_date
         
-        # 규칙 2: 소모(출고)는 입력하는 '해당 일 열(예: 30일)'에 누적 가산
         excel_success = update_excel_vini_rule(cat, item, qty, out_date_val, action="outbound")
         
         if excel_success:
@@ -496,8 +482,10 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                 for idx, row in edited_bulk.iterrows():
                     p_name = row['품목명']
                     p_cat = row['대분류']
-                    in_val = int(row['📥 오늘 입고량'])
-                    out_val = int(row['📤 오늘 소모량'])
+                    
+                    # 🎯 [에러 방어] 빈칸(NaN)일 경우 자동으로 0으로 전처리 처리
+                    in_val = int(pd.to_numeric(row['📥 오늘 입고량'], errors='coerce').fillna(0))
+                    out_val = int(pd.to_numeric(row['📤 오늘 소모량'], errors='coerce').fillna(0))
                     utg_val = str(row['⏳ 유통기한']).strip() if pd.notna(row['⏳ 유통기한']) else ""
                     
                     target_sheet = SHEET_MAP.get(p_cat, p_cat) 
@@ -512,8 +500,8 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                             val = str(cell_v).strip().replace(" ", "")
                             
                             if '품목이름' in val or '품목명' in val or '구분' in val: name_idx = c
-                            elif '금월입고' in val or '입고' in val: inbound_idx = c # 입고 컬럼 추적
-                            elif val == target_day_text or val == target_day_num or val == f"0{target_day_num}": target_date_col_idx = c # 해당 일 컬럼 추적
+                            elif '금월입고' in val or '입고' in val: inbound_idx = c 
+                            elif val == target_day_text or val == target_day_num or val == f"0{target_day_num}": target_date_col_idx = c 
                             elif '유통' in val: expiry_idx = c
 
                         if name_idx:
@@ -521,14 +509,14 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                                 excel_item_name = str(ws.cell(row=r, column=name_idx).value).strip()
                                 if excel_item_name == p_name:
                                     
-                                    # [규칙 반영 1] 일괄 입고 입력값은 엑셀 '금월 입고' 열에 누적 가산
+                                    # 입고 입력값은 엑셀 '금월 입고' 열에 가산
                                     if inbound_idx and in_val > 0:
                                         cell_in = ws.cell(row=r, column=inbound_idx)
                                         try: current_in = int(cell_in.value) if cell_in.value is not None else 0
                                         except: current_in = 0
                                         cell_in.value = current_in + in_val
                                         
-                                    # [규칙 반영 2] 일괄 소모 입력값은 엑셀 선택된 '해당 일자' 열에 누적 가산
+                                    # 소모 입력값은 엑셀 선택된 '해당 일자' 열에 가산
                                     if target_date_col_idx and out_val > 0:
                                         cell_out = ws.cell(row=r, column=target_date_col_idx)
                                         try: current_out = int(cell_out.value) if cell_out.value is not None else 0
@@ -547,8 +535,8 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         for idx, row in edited_bulk.iterrows():
             p_name = row['품목명']
             p_cat = row['대분류']
-            in_val = int(row['📥 오늘 입고량'])
-            out_val = int(row['📤 오늘 소모량'])
+            in_val = int(pd.to_numeric(row['📥 오늘 입고량'], errors='coerce').fillna(0))
+            out_val = int(pd.to_numeric(row['📤 오늘 소모량'], errors='coerce').fillna(0))
             utg_val = str(row['⏳ 유통기한']).strip() if pd.notna(row['⏳ 유통기한']) else ""
             
             orig_match = master_data[master_data['품목명'] == p_name]
