@@ -819,3 +819,39 @@ elif menu == "⚙️ 품목 추가/삭제 관리":
                 
     st.markdown("---")
     st.dataframe(master_data.sort_values(by=["대분류", "품목명"]), use_container_width=True, hide_index=True)
+
+st.title("엑셀 데이터 업로드 프로그램")
+
+# 1. 파일 업로드 컴포넌트
+uploaded_file = st.file_uploader("엑셀 파일을 업로드하세요 (.xlsx)", type=["xlsx"])
+
+# 파일이 업로드되었는지 확인
+if uploaded_file is not None:
+    st.success("파일이 성공적으로 업로드되었습니다!")
+    
+    # 2. [데이터 인식] 버튼 생성
+    # 사용자가 이 버튼을 클릭해야만 이 안의 코드(if문 내부)가 실행됩니다.
+    if st.button("엑셀 데이터 인식 및 분석 시작"):
+        try:
+            # 엑셀 파일 읽기
+            df = pd.read_excel(uploaded_file)
+            
+            # 열 이름(공백 제거) 표준화
+            df.columns = [col.strip() for col in df.columns]
+            
+            # 필수 열(품목, 수량)이 존재하는지 체크
+            required_columns = ['품목', '수량']
+            if all(col in df.columns for col in required_columns):
+                
+                # 정상적으로 데이터를 불러온 경우 화면에 표시
+                st.subheader("📋 인식된 데이터")
+                st.dataframe(df[['품목', '수량']])
+                
+                # 추가 데이터 처리 로직을 여기에 작성 (예: DB 저장, 자동화 작업 등)
+                st.balloons() # 성공 축하 효과
+                
+            else:
+                st.error(f"엑셀 파일에 '품목' 또는 '수량' 열이 없습니다. 열 이름을 확인해주세요. (현재 열: {list(df.columns)})")
+                
+        except Exception as e:
+            st.error(f"파일을 읽는 중 오류가 발생했습니다: {e}")
