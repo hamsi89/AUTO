@@ -465,7 +465,7 @@ def show_today_logs_and_management(is_wine=False):
 # 1) 입고 등록 메뉴(개별)
 if menu == "📥 물품 입고 등록 (개별)":
     st.subheader("📥 매장 물품 입고 등록 (개별)")
-    st.info("💡 입고 수량과 유통기한을 맞춘 후 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
+    st.info("💡 입고 수량และ 유통기한을 맞춘 후 **엔터(Enter) 키**를 누르면 즉시 저장 및 비워집니다.")
     
     categories = list(master_data['대분류'].unique()) if not master_data.empty else ["원재료", "부자재", "디저트&완제품"]
     selected_cat = st.selectbox("1. 입고 품목 분류 선택", categories, key="in_cat")
@@ -526,16 +526,13 @@ elif menu == "📤 물품 출고 등록 (소모-개별)":
                     
         show_today_logs_and_management()
 
-# 3) 전품목 일괄 입력 (엑셀 스타일)
+# 3) 전품목 일괄 입력 (엑셀 스타일) -> [수정 반영 완료]
 elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
     st.subheader("📝 전품목 일괄 입력 (엑셀 스타일)")
     
     if st.session_state.bulk_download_ready and st.session_state.bulk_excel_bytes:
-        st.success("🎉 일괄 변동 내역이 지정하신 시트의 [금월 입고] 열과 [해당 일] 열에 오차 없이 동시에 저장되었습니다!")
+        st.success("🎉 현재 상태를 반영한 수불 집계표 및 원본 대장 파일 추출이 완료되었습니다!")
         col_dl1, col_dl2 = st.columns(2)
-        
-        # 버튼 렌더링마다 유니크한 초 단위 타임스탬프를 Key에 결합해 Streamlit 버퍼 캐시를 완벽히 깨부숩니다.
-        bulk_ts = datetime.datetime.now().strftime("%H%M%S")
         
         with col_dl1:
             st.download_button(
@@ -545,7 +542,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 use_container_width=True,
-                key=f"vini_bulk_summary_btn_{bulk_ts}"
+                key="vini_bulk_summary_fixed_key"
             )
         with col_dl2:
             if st.session_state.orig_excel_bytes:
@@ -555,7 +552,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                     file_name=f"🟢수치최신반영_VINI대장_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    key=f"vini_orig_master_btn_{bulk_ts}"
+                    key="vini_orig_master_fixed_key"
                 )
         st.markdown("---")
     
@@ -577,13 +574,12 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         pivot_all = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
         
     bulk_df = pd.merge(master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], pivot_all, on=['대분류', '품목명'], how='left').fillna(0)
-    bulk_df['현재고'] = bulk_df['엑셀기본재고'] + bulk_df['금월 입고'] - bulk_df['월 소모(출고)']
-    bulk_df['currently_stock'] = bulk_df['현재고'].astype(int)
+    bulk_df['currently_stock'] = (bulk_df['엑셀기본재고'] + bulk_df['금월 입고'] - bulk_df['월 소모(출고)']).astype(int)
     
     bulk_df['📥 오늘 입고량'] = 0
     bulk_df['📤 오늘 소모량'] = 0
     
-    bulk_df = bulk_df.rename(columns={"유통기한": "⏳ 유통기한"})
+    bulk_df = bulk_df.rename(columns={"유통기한": "⏳ 유통기한", "currently_stock": "현재고"})
     display_bulk = bulk_df[['대분류', '품목명', '현재고', '📥 오늘 입고량', '📤 오늘 소모량', '⏳ 유통기한']].copy()
     
     if bulk_cat != "전체":
@@ -607,7 +603,6 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
     if st.button("💾 위 입력된 모든 내역 일괄 저장하고 엑셀 추출하기", use_container_width=True):
         batch_new_logs = []
         master_update_needed = False
-        excel_bulk_updated = False
         
         if os.path.exists(ORIGINAL_EXCEL_PATH):
             try:
@@ -638,7 +633,7 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                             if cell_v is None: continue
                             val = str(cell_v).strip().replace(" ", "")
                             
-                            if '품목이름' in val or '품목명' in val or '구บ' in val or '구분' in val: name_idx = c
+                            if '품목이름' in val or '품목명' in val or '구분' in val: name_idx = c
                             elif '금월입고' in val or '입고' in val: inbound_idx = c 
                             elif val == target_day_text or val == target_day_num or val == f"0{target_day_num}": target_date_col_idx = c 
                             elif '유통' in val: expiry_idx = c
@@ -647,7 +642,6 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                             for r in range(header_row + 1, ws.max_row + 1):
                                 excel_item_name = str(ws.cell(row=r, column=name_idx).value).strip()
                                 if excel_item_name == p_name:
-                                    
                                     if inbound_idx and in_val > 0:
                                         cell_in = ws.cell(row=r, column=inbound_idx)
                                         try: current_in = int(cell_in.value) if cell_in.value is not None else 0
@@ -665,7 +659,6 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                                     break
                 wb.save(ORIGINAL_EXCEL_PATH)
                 wb.close()
-                excel_bulk_updated = True
             except Exception as e:
                 st.error(f"서버 엑셀 일괄 규칙 반영 실패: {e}")
 
@@ -693,63 +686,67 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
             if out_val > 0:
                 batch_new_logs.append({"날짜": bulk_date.strftime("%Y-%m-%d"), "대분류": p_cat, "품목명": p_name, "구분": "월 소모(출고)", "수량": out_val, "유통기한": ""})
                 
-        if batch_new_logs or master_update_needed or excel_bulk_updated:
-            if batch_new_logs:
-                existing_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
-                combined_logs = pd.concat([existing_logs, pd.DataFrame(batch_new_logs)], ignore_index=True)
-                combined_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
-                
-            if master_update_needed:
-                master_data.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
-                
-            fresh_master, fresh_logs = get_latest_master_and_logs()
-            current_month_str = bulk_date.strftime("%Y-%m")
+        if batch_new_logs:
+            existing_logs = pd.read_csv(STOCK_LOG_FILE, encoding='utf-8-sig')
+            combined_logs = pd.concat([existing_logs, pd.DataFrame(batch_new_logs)], ignore_index=True)
+            combined_logs.to_csv(STOCK_LOG_FILE, index=False, encoding='utf-8-sig')
             
-            if not fresh_logs.empty:
-                fresh_logs['날짜_dt'] = pd.to_datetime(fresh_logs['날짜'])
-                filtered_df = fresh_logs[fresh_logs['날짜_dt'].dt.strftime("%Y-%m") == current_month_str]
-                
-                if not filtered_df.empty:
-                    summary = filtered_df.pivot_table(index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum').fillna(0).reset_index()
-                    if "금월 입고" not in summary.columns: summary["금월 입고"] = 0
-                    if "월 소모(출고)" not in summary.columns: summary["월 소모(출고)"] = 0
-                    
-                    summary['금월 입고'] = summary['금월 입고'].astype(int)
-                    summary['월 소모(출고)'] = summary['월 소모(출고)'].astype(int)
-                    summary = summary.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
-                    summary = pd.merge(fresh_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], summary, on=['대분류', '품목명'], how='inner')
-                    summary['실시간 예상 현재고'] = summary['엑셀기본재고'] + summary['총 입고량'] - summary['총 소모량']
-                    
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                        summary.to_excel(writer, index=False, sheet_name=f'{current_month_str}_일괄갱신집계')
-                    
-                    st.session_state.bulk_excel_bytes = buffer.getvalue()
-                    st.session_state.bulk_filename = f"vini_bulk_updated_{bulk_date.strftime('%Y%m%d')}.xlsx"
-                    st.session_state.bulk_download_ready = True
+        if master_update_needed:
+            master_data.to_csv(CUSTOM_MASTER_FILE, index=False, encoding='utf-8-sig')
             
-            if os.path.exists(ORIGINAL_EXCEL_PATH):
-                with open(ORIGINAL_EXCEL_PATH, "rb") as f:
-                    st.session_state.orig_excel_bytes = f.read()
-            
-            st.cache_data.clear()
-            st.rerun()
+        # 변동 수치 유무 관계없이 무조건 다운로드용 버퍼를 새로 생성하여 세션 주입
+        fresh_master, fresh_logs = get_latest_master_and_logs()
+        current_month_str = bulk_date.strftime("%Y-%m")
+        
+        if not fresh_logs.empty:
+            fresh_logs['날짜_dt'] = pd.to_datetime(fresh_logs['날짜'])
+            filtered_df = fresh_logs[fresh_logs['날짜_dt'].dt.strftime("%Y-%m") == current_month_str]
         else:
-            st.warning("⚠️ 표에 숫자가 기입된 내역이 없습니다. 숫자를 적은 후 저장 버튼을 눌러주세요.")
+            filtered_df = pd.DataFrame()
+            
+        if not filtered_df.empty:
+            summary = filtered_df.pivot_table(index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum').fillna(0).reset_index()
+        else:
+            summary = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
+            
+        if "금월 입고" not in summary.columns: summary["금월 입고"] = 0
+        if "월 소모(출고)" not in summary.columns: summary["월 소모(출고)"] = 0
+        
+        summary['금월 입고'] = summary['금월 입고'].astype(int)
+        summary['월 소모(출고)'] = summary['월 소모(출고)'].astype(int)
+        summary = summary.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
+        summary = pd.merge(fresh_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], summary, on=['대분류', '품목명'], how='left').fillna(0)
+        summary['실시간 예상 현재고'] = summary['엑셀기본재고'] + summary['총 입고량'] - summary['총 소모량']
+        
+        summary['총 입고량'] = summary['총 입고량'].astype(int)
+        summary['총 소모량'] = summary['총 소모량'].astype(int)
+        summary['실시간 예상 현재고'] = summary['실시간 예상 현재고'].astype(int)
+        
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            summary.to_excel(writer, index=False, sheet_name=f'{current_month_str}_일괄갱신집계')
+        
+        st.session_state.bulk_excel_bytes = buffer.getvalue()
+        st.session_state.bulk_filename = f"vini_bulk_updated_{bulk_date.strftime('%Y%m%d')}.xlsx"
+        st.session_state.bulk_download_ready = True
+        
+        if os.path.exists(ORIGINAL_EXCEL_PATH):
+            with open(ORIGINAL_EXCEL_PATH, "rb") as f:
+                st.session_state.orig_excel_bytes = f.read()
+        
+        st.cache_data.clear()
+        st.rerun()
 
     show_today_logs_and_management()
 
-# 🍷 4) 와인 재고 관리 메뉴 (일괄 입력 엑셀 스타일)
+# 🍷 4) 와인 재고 관리 메뉴 (일괄 입력 엑셀 스타일) -> [수정 반영 완료]
 elif menu == "🍷 와인 재고 관리 (일괄 입력)":
     st.subheader("🍷 와인 수불 대장 관리 및 일괄 입력 (엑셀 스타일)")
     st.info("💡 와인 전용 대장인 `와인_입출고양식_디자인적용_현재고요약.xlsx` 파일을 타겟으로 동기화합니다.")
     
     if st.session_state.wine_download_ready and st.session_state.wine_excel_bytes:
-        st.success("🎉 와인 변동 내역이 대장 파일에 안전하게 동기화 저장되었습니다!")
+        st.success("🎉 현재 상태를 반영한 와인 대장 파일 추출이 완료되었습니다!")
         col_wd1, col_wd2 = st.columns(2)
-        
-        # 와인 역시 다운로드 컴포넌트에 동적 타임스탬프 Key를 주어 캐시 간섭을 완전 차단합니다.
-        wine_ts = datetime.datetime.now().strftime("%H%M%S")
         
         with col_wd1:
             st.download_button(
@@ -759,7 +756,7 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 use_container_width=True,
-                key=f"wine_bulk_summary_btn_{wine_ts}"
+                key="wine_bulk_summary_fixed_key"
             )
         with col_wd2:
             if st.session_state.wine_orig_bytes:
@@ -769,7 +766,7 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
                     file_name=f"🟢수치최신반영_와인대장_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    key=f"wine_orig_master_btn_{wine_ts}"
+                    key="wine_orig_master_fixed_key"
                 )
         st.markdown("---")
         
@@ -787,15 +784,13 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
         w_pivot = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
         
     w_bulk_df = pd.merge(wine_master_data[['대분류', '품목명', '엑셀기본재고', '유통기한']], w_pivot, on=['대분류', '품목명'], how='left').fillna(0)
-    w_bulk_df['현재고'] = w_bulk_df['엑셀기본재고'] + w_bulk_df['금월 입고'] - w_bulk_df['월 소모(출고)']
-    w_bulk_df['currently_stock'] = w_bulk_df['현재고'].astype(int)
+    w_bulk_df['currently_stock'] = (w_bulk_df['엑셀기본재고'] + w_bulk_df['금월 입고'] - w_bulk_df['월 소모(출고)']).astype(int)
     
     w_bulk_df['📥 오늘 입고량'] = 0
     w_bulk_df['📤 오늘 소모량'] = 0
     
-    w_bulk_df = w_bulk_df.rename(columns={"유통기한": "⏳ 빈티지/유통기한"})
-    w_display_bulk = w_bulk_df[['대분류', '품목명', 'currently_stock', '📥 오늘 입고량', '📤 오늘 소모량', '⏳ 빈티지/유통기한']].copy()
-    w_display_bulk = w_display_bulk.rename(columns={"currently_stock": "현재고"})
+    w_bulk_df = w_bulk_df.rename(columns={"유통기한": "⏳ 빈티지/유통기한", "currently_stock": "현재고"})
+    w_display_bulk = w_bulk_df[['대분류', '품목명', '현재고', '📥 오늘 입고량', '📤 오늘 소모량', '⏳ 빈티지/유통기한']].copy()
     
     edited_wine_bulk = st.data_editor(
         w_display_bulk,
@@ -815,7 +810,6 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
     if st.button("💾 위 입력된 와인 내역 일괄 저장하고 엑셀 추출하기", use_container_width=True):
         w_new_logs = []
         w_master_update = False
-        w_excel_updated = False
         
         if os.path.exists(WINE_EXCEL_PATH):
             try:
@@ -869,7 +863,6 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
                                 
                 wb.save(WINE_EXCEL_PATH)
                 wb.close()
-                w_excel_updated = True
             except Exception as e:
                 st.error(f"와인 엑셀 반영 중 오류 발생: {e}")
                 
@@ -892,40 +885,51 @@ elif menu == "🍷 와인 재고 관리 (일괄 입력)":
             if out_val > 0:
                 w_new_logs.append({"날짜": w_bulk_date.strftime("%Y-%m-%d"), "대분류": "와인", "품목명": p_name, "구분": "월 소모(출고)", "수량": out_val, "유통기한": ""})
                 
-        if w_new_logs or w_master_update or w_excel_updated:
-            if w_new_logs:
-                ex_logs = pd.read_csv(WINE_LOG_FILE, encoding='utf-8-sig')
-                pd.concat([ex_logs, pd.DataFrame(w_new_logs)], ignore_index=True).to_csv(WINE_LOG_FILE, index=False, encoding='utf-8-sig')
-            if w_master_update:
-                wine_master_data.to_csv(WINE_MASTER_FILE, index=False, encoding='utf-8-sig')
-                
-            fresh_w_master, fresh_w_logs = get_wine_master_and_logs()
-            w_month = w_bulk_date.strftime("%Y-%m")
+        if w_new_logs:
+            ex_logs = pd.read_csv(WINE_LOG_FILE, encoding='utf-8-sig')
+            pd.concat([ex_logs, pd.DataFrame(w_new_logs)], ignore_index=True).to_csv(WINE_LOG_FILE, index=False, encoding='utf-8-sig')
+        if w_master_update:
+            wine_master_data.to_csv(WINE_MASTER_FILE, index=False, encoding='utf-8-sig')
             
-            if not fresh_w_logs.empty:
-                fresh_w_logs['날짜_dt'] = pd.to_datetime(fresh_w_logs['날짜'])
-                w_fil = fresh_w_logs[fresh_w_logs['날짜_dt'].dt.strftime("%Y-%m") == w_month]
-                if not w_fil.empty:
-                    w_sum = w_fil.pivot_table(index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum').fillna(0).reset_index()
-                    if "금월 입고" not in w_sum.columns: w_sum["금월 입고"] = 0
-                    if "월 소모(출고)" not in w_sum.columns: w_sum["월 소모(출고)"] = 0
-                    w_sum = w_sum.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
-                    w_sum = pd.merge(fresh_w_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], w_sum, on=['대분류', '품목명'], how='inner')
-                    w_sum['실시간 예상 현재고'] = w_sum['엑셀기본재고'] + w_sum['총 입고량'] - w_sum['총 소모량']
-                    
-                    buf = io.BytesIO()
-                    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                        w_sum.to_excel(writer, index=False, sheet_name=f'{w_month}_와인수불집계')
-                    st.session_state.wine_excel_bytes = buf.getvalue()
-                    st.session_state.wine_filename = f"wine_summary_{w_bulk_date.strftime('%Y%m%d')}.xlsx"
-                    st.session_state.wine_download_ready = True
-                    
-            if os.path.exists(WINE_EXCEL_PATH):
-                with open(WINE_EXCEL_PATH, "rb") as f:
-                    st.session_state.wine_orig_bytes = f.read()
-            st.cache_data.clear()
-            st.rerun()
+        # 와인 변동 수치 유무 관계없이 무조건 와인 엑셀 데이터를 바이트로 로드 및 세션 주입
+        fresh_w_master, fresh_w_logs = get_wine_master_and_logs()
+        w_month = w_bulk_date.strftime("%Y-%m")
+        
+        if not fresh_w_logs.empty:
+            fresh_w_logs['날짜_dt'] = pd.to_datetime(fresh_w_logs['날짜'])
+            w_fil = fresh_w_logs[fresh_w_logs['날짜_dt'].dt.strftime("%Y-%m") == w_month]
+        else:
+            w_fil = pd.DataFrame()
             
+        if not w_fil.empty:
+            w_sum = w_fil.pivot_table(index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum').fillna(0).reset_index()
+        else:
+            w_sum = pd.DataFrame(columns=['대분류', '품목명', '금월 입고', '월 소모(출고)'])
+            
+        if "금월 입고" not in w_sum.columns: w_sum["금월 입고"] = 0
+        if "월 소모(출고)" not in w_sum.columns: w_sum["월 소모(출고)"] = 0
+        
+        w_sum = w_sum.rename(columns={"금월 입고": "총 입고량", "월 소모(출고)": "총 소모량"})
+        w_sum = pd.merge(fresh_w_master[['대분류', '품목명', '엑셀기본재고', '유통기한']], w_sum, on=['대분류', '품목명'], how='left').fillna(0)
+        w_sum['실시간 예상 현재고'] = w_sum['엑셀기본재고'] + w_sum['총 입고량'] - w_sum['총 소모량']
+        
+        w_sum['총 입고량'] = w_sum['총 입고량'].astype(int)
+        w_sum['총 소모량'] = w_sum['총 소모량'].astype(int)
+        w_sum['실시간 예상 현재고'] = w_sum['실시간 예상 현재고'].astype(int)
+        
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+            w_sum.to_excel(writer, index=False, sheet_name=f'{w_month}_와인수불집계')
+        st.session_state.wine_excel_bytes = buf.getvalue()
+        st.session_state.wine_filename = f"wine_summary_{w_bulk_date.strftime('%Y%m%d')}.xlsx"
+        st.session_state.wine_download_ready = True
+        
+        if os.path.exists(WINE_EXCEL_PATH):
+            with open(WINE_EXCEL_PATH, "rb") as f:
+                st.session_state.wine_orig_bytes = f.read()
+        st.cache_data.clear()
+        st.rerun()
+        
     show_today_logs_and_management(is_wine=True)
 
 # 5) 실시간 현재고 현황판
