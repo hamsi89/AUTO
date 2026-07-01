@@ -41,7 +41,9 @@ except json.decoder.JSONDecodeError as e:
 # gspread 인증 및 시트 전역 연결
 @st.cache_resource
 def get_gspread_client():
-    return gspread.oauth_from_dict(creds_dict, auth_user_dict)
+    # 반환되는 튜플에서 첫 번째 값(Client)만 client 변수에 담고, 두 번째 토큰은 버립니다(_)
+    client, _ = gspread.oauth_from_dict(creds_dict, auth_user_dict)
+    return client
 
 gc = get_gspread_client()
 
