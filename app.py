@@ -4,10 +4,9 @@ import datetime
 import os
 import io
 import shutil
-import openpyxl  
+import openpyxl
 import json
 import gspread
-
 # [필수] 페이지 설정은 앱 전체 최상단에 딱 1번만 실행되어야 오류가 발생하지 않습니다.
 st.set_page_config(page_title="VINI COFFEE 재고관리 시스템", page_icon="☕", layout="wide")
 
