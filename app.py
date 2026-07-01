@@ -873,7 +873,7 @@ elif menu == "📋 실시간 현재고 현황판":
     
     if not fresh_logs.empty:
         pivot_all = fresh_logs.pivot_table(
-            index=['대분류', '품목명'], columns='구展', values='수량', aggfunc='sum'
+            index=['대분류', '품목명'], columns='구분', values='수량', aggfunc='sum'
         ).fillna(0).reset_index()
         if "금월 입고" not in pivot_all.columns: pivot_all["금월 입고"] = 0
         if "월 소모(출고)" not in pivot_all.columns: pivot_all["월 소모(출고)"] = 0
