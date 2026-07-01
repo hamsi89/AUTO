@@ -483,9 +483,13 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
                     p_name = row['품목명']
                     p_cat = row['대분류']
                     
-                    # 🎯 [에러 방어] 빈칸(NaN)일 경우 자동으로 0으로 전처리 처리
-                    in_val = int(pd.to_numeric(row['📥 오늘 입고량'], errors='coerce').fillna(0))
-                    out_val = int(pd.to_numeric(row['📤 오늘 소모량'], errors='coerce').fillna(0))
+                    # 🎯 [오류 원천 수정] 빈칸 처리용 정밀 전처리 코드 적용
+                    try: in_val = int(float(str(row['📥 오늘 입고량']).strip() or 0))
+                    except: in_val = 0
+                        
+                    try: out_val = int(float(str(row['📤 오늘 소모량']).strip() or 0))
+                    except: out_val = 0
+                        
                     utg_val = str(row['⏳ 유통기한']).strip() if pd.notna(row['⏳ 유통기한']) else ""
                     
                     target_sheet = SHEET_MAP.get(p_cat, p_cat) 
@@ -535,8 +539,13 @@ elif menu == "📝 전품목 일괄 입력 (엑셀 스타일)":
         for idx, row in edited_bulk.iterrows():
             p_name = row['품목명']
             p_cat = row['대분류']
-            in_val = int(pd.to_numeric(row['📥 오늘 입고량'], errors='coerce').fillna(0))
-            out_val = int(pd.to_numeric(row['📤 오늘 소모량'], errors='coerce').fillna(0))
+            
+            try: in_val = int(float(str(row['📥 오늘 입고량']).strip() or 0))
+            except: in_val = 0
+                
+            try: out_val = int(float(str(row['📤 오늘 소모량']).strip() or 0))
+            except: out_val = 0
+                
             utg_val = str(row['⏳ 유통기한']).strip() if pd.notna(row['⏳ 유통기한']) else ""
             
             orig_match = master_data[master_data['품목명'] == p_name]
@@ -616,10 +625,10 @@ elif menu == "📋 실시간 현재고 현황판":
     
     dashboard_df['금월 입고'] = dashboard_df['금월 입고'].astype(int)
     dashboard_df['월 소모(출고)'] = dashboard_df['월 소모(출고)'].astype(int)
-    dashboard_df['현재고'] = dashboard_df['엑셀기본재고'] + dashboard_df['금월 입고'] - dashboard_df['월 소모(출고)']
-    dashboard_df['현재고'] = dashboard_df['현재고'].astype(int)
+    dashboard_df['currently_stock'] = dashboard_df['엑셀기본재고'] + dashboard_df['금월 입고'] - dashboard_df['월 소모(출고)']
+    dashboard_df['currently_stock'] = dashboard_df['currently_stock'].astype(int)
     
-    dashboard_df = dashboard_df.rename(columns={"엑셀기본재고": "기본재고(이월)", "금월 입고": "누적 입고량", "월 소모(출고)": "누적 소모량"})
+    dashboard_df = dashboard_df.rename(columns={"엑셀기본재고": "기본재고(이월)", "금월 입고": "누적 입고량", "월 소모(출고)": "누적 소모량", "currently_stock": "현재고"})
     
     col_f1, col_f2 = st.columns([1, 2])
     with col_f1: filter_cat = st.radio("분류별 필터", ["전체"] + list(fresh_master['대분류'].unique()), horizontal=True)
