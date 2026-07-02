@@ -58,12 +58,12 @@ if not st.session_state.logged_in:
 # =========================================================================
 
 # 파일 이름 설정
-ORIGINAL_EXCEL_PATH = "VINI_COFFEE_통합_식자재_및_매출관리_시스템_v3_주간체크리스트추가.xlsx"
+ORIGINAL_EXCEL_PATH = "물품.xlsx"
 CUSTOM_MASTER_FILE = "vini_custom_master.csv"  
 STOCK_LOG_FILE = "vini_daily_stock_log.csv"
 
 # 🍷 와인 전용 파일 및 로그 설정
-WINE_EXCEL_PATH = "와인_입출고양식_디자인적용_현재고요약.xlsx"
+WINE_EXCEL_PATH = "와인.xlsx"
 WINE_MASTER_FILE = "wine_custom_master.csv"
 WINE_LOG_FILE = "wine_daily_stock_log.csv"
 
